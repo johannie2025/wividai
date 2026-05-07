@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: wividai-node
+    runtime: node
+    plan: free           # Compatible free tier (pas de disk persistant requis en mode db)
+    region: frankfurt
+    rootDir: node-service
+    buildCommand: |
+      apt-get install -y \
+        chromium fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 \
+        libcups2 libdbus-1-3 libdrm2 libgbm1 libgtk-3-0 libnss3 \
+        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxss1 xdg-utils \
+        ffmpeg 2>/dev/null || true
+      npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    # Pas de disk — mode STORAGE_MODE=db (fichiers stockés en MySQL via PHP)
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3001"
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: INTERNAL_SECRET
+        sync: false       # !! Doit être identique au APP_KEY PHP !!
+      - key: APP_URL
+        sync: false       # URL du serveur PHP (pour webhook callbacks)
+      - key: PUBLIC_URL
+        sync: false       # URL de ce service Render (auto-généré par Render)
+      - key: STORAGE_MODE
+        value: db         # Stockage via PHP/MySQL — pas de filesystem persistant
+      - key: TMP_DIR
+        value: /tmp/wividai
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "true"
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: "/usr/bin/chromium"
