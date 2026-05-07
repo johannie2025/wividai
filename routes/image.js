@@ -1,42 +1,31 @@
 import { Router } from 'express';
-import { generateImage } from '../services/openrouter.js';
-import { callWebhook }   from '../services/webhook.js';
-import { validateJob }   from '../middleware/validate.js';
+import { generateHyperframeHTML } from '../src/services/openrouter.js';
+import { uploadImage }            from '../src/services/upload.js';
+import { callWebhook }            from '../src/services/webhook.js';
+import { validateJob }            from '../src/middleware/validate.js';
 
 const router = Router();
 
 /**
  * POST /jobs/image
  * Body: { gen_id, prompt, style, width, height, model, webhook, secret }
- * Response: 202 immediately, then calls webhook when done.
+ * Response: 202 immédiat, puis webhook quand terminé.
  */
 router.post('/', validateJob, async (req, res) => {
-  const { gen_id, prompt, style, width, height, model, webhook, secret } = req.body;
+  const { gen_id, prompt, style = '', width = 512, height = 512, model, webhook, secret } = req.body;
 
-  // Acknowledge immediately — PHP is waiting for 202, not for the image
   res.status(202).json({ queued: true, gen_id });
 
-  // ─── Async generation (no await on route level) ─────────────────────────
   (async () => {
     try {
-      const fullPrompt = style ? `${prompt}. Style: ${style}` : prompt;
-
-      const result = await generateImage({
-        model,
-        prompt: fullPrompt,
-        width,
-        height,
-        // Optimised for speed on free tier
-        num_inference_steps: width > 768 ? 4 : 3,  // FLUX schnell is fast at 3-4 steps
-        guidance_scale: 0,
-        seed: Math.floor(Math.random() * 2 ** 32),
-      });
+      const html      = await generateHyperframeHTML({ model, prompt, style, width, height, duration: 1, format: '1:1', type: 'image' });
+      const outputUrl = await uploadImage(html, gen_id, width, height);
 
       await callWebhook(webhook, secret, {
         gen_id,
         status:     'completed',
-        output_url: result.url,
-        meta:       { width, height, model },
+        output_url: outputUrl,
+        meta:       { width, height, model, pipeline: 'hyperframes' },
       });
 
     } catch (err) {
@@ -45,7 +34,7 @@ router.post('/', validateJob, async (req, res) => {
         gen_id,
         status: 'failed',
         error:  err.message,
-      }).catch(() => {}); // swallow webhook failure
+      }).catch(() => {});
     }
   })();
 });
