@@ -13,7 +13,7 @@
     "@fastify/static": "^7.0.4",
     "@google/generative-ai": "^0.21.0",
     "fastify": "^4.28.1",
-    "puppeteer": "^22.12.1",
+    "puppeteer-core": "^22.12.1",
     "uuid": "^9.0.1"
   },
   "engines": {
