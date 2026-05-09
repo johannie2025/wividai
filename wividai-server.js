@@ -15,13 +15,32 @@
 
 const Fastify = require('fastify');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-core');
 const fs = require('fs');
 const path = require('path');
 const { execSync, exec } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
 const cors = require('@fastify/cors');
 const multipart = require('@fastify/multipart');
+
+// ── Chrome path resolver (Render.com + local dev) ──
+function getChromePath() {
+  // Render.com installe chromium via apt (render.yaml)
+  const candidates = [
+    process.env.CHROME_BIN,
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/snap/bin/chromium',
+  ];
+  for (const p of candidates) {
+    if (p) {
+      try { require('fs').accessSync(p); return p; } catch {}
+    }
+  }
+  throw new Error('Chrome/Chromium introuvable. Vérifiez render.yaml (apt: chromium)');
+}
 
 const app = Fastify({ logger: true });
 const PORT = process.env.PORT || 3000;
@@ -41,7 +60,7 @@ app.register(require('@fastify/static'), { root: OUTPUTS_DIR, prefix: '/videos/'
 
 async function generateWVML(prompt, geminiKey, openrouterKey, style = 'cinematic') {
   const systemPrompt = `Tu es WIVIDAI, un architecte de vidéos cinématiques. 
-Génère un WVML JSON COMPLET et CRÉATIF pour une vidéo MP4 de 15 secondes à 30fps en 9:16 (720x1280).
+Génère un WVML JSON COMPLET et CRÉATIF pour une vidéo MP4 de 15 secondes à 30fps en 9:16 (1080x1920).
 Le WVML doit inclure des scènes SPECTACULAIRES avec:
 - Mouvements de caméra (dolly, parallax, tilt, shake, orbit)
 - Effets Hollywood (lens_flare, chromatic_aberration, film_grain, light_rays, depth_blur)
@@ -53,7 +72,7 @@ Réponds UNIQUEMENT avec le JSON valide, aucun texte avant/après.
 
 Structure WVML obligatoire:
 {
-  "project": { "duration": 15, "fps": 30, "width": 720, "height": 1280, "style": "...", "colorGrade": {...} },
+  "project": { "duration": 15, "fps": 30, "width": 1080, "height": 1920, "style": "...", "colorGrade": {...} },
   "audio": { "bgm": "...", "bpm": 128 },
   "camera": { "globalShake": 0.2, "depthOfField": true },
   "timeline": [
@@ -155,8 +174,8 @@ body { background:#000; overflow:hidden; }
 <canvas id="canvas"></canvas>
 <script>
 const WVML = ${wvmlStr};
-const W = WVML.project.width || 720;
-const H = WVML.project.height || 1280;
+const W = WVML.project.width || 1080;
+const H = WVML.project.height || 1920;
 const FPS = WVML.project.fps || 30;
 const DURATION = WVML.project.duration || 15;
 
@@ -1063,18 +1082,23 @@ async function generateVideo(wvml, jobId) {
   fs.mkdirSync(framesDir, { recursive: true });
 
   const browser = await puppeteer.launch({
-    headless: 'new',
+    executablePath: getChromePath(),
+    headless: true,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--window-size=720,1280'
+      '--disable-software-rasterizer',
+      '--disable-extensions',
+      '--single-process',
+      '--no-zygote',
+      '--window-size=1080,1920'
     ]
   });
 
   const page = await browser.newPage();
-  await page.setViewport({ width: 720, height: 1280, deviceScaleFactor: 1 });
+  await page.setViewport({ width: 1080, height: 1920, deviceScaleFactor: 1 });
   const html = buildRendererHTML(wvml);
   await page.setContent(html, { waitUntil: 'networkidle0' });
 
@@ -1087,7 +1111,7 @@ async function generateVideo(wvml, jobId) {
   for (let frame = 0; frame < totalFrames; frame++) {
     await page.evaluate((f) => window.renderFrame(f), frame);
     const framePath = path.join(framesDir, `frame_${String(frame).padStart(6, '0')}.png`);
-    await page.screenshot({ path: framePath, type: 'png', clip: { x: 0, y: 0, width: 720, height: 1280 } });
+    await page.screenshot({ path: framePath, type: 'png', clip: { x: 0, y: 0, width: 1080, height: 1920 } });
 
     if (frame % 30 === 0) app.log.info(`Frame ${frame}/${totalFrames}`);
   }
@@ -1097,7 +1121,7 @@ async function generateVideo(wvml, jobId) {
   // Assemble MP4 via ffmpeg
   const outputPath = path.join(OUTPUTS_DIR, `${jobId}.mp4`);
   const cmd = `ffmpeg -y -framerate ${fps} -i "${framesDir}/frame_%06d.png" \
-    -vf "scale=720:1280:flags=lanczos" \
+    -vf "scale=1080:1920:flags=lanczos" \
     -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p \
     -movflags +faststart "${outputPath}"`;
 
@@ -1120,7 +1144,7 @@ async function generateVideo(wvml, jobId) {
 
 function getDemoWVML(prompt, style) {
   return {
-    project: { duration: 10, fps: 30, width: 720, height: 1280, style: style || 'marvel' },
+    project: { duration: 10, fps: 30, width: 1080, height: 1920, style: style || 'marvel' },
     audio: { bgm: 'cinematic_epic.mp3', bpm: 120 },
     camera: { globalShake: 0.1, depthOfField: true },
     timeline: [
