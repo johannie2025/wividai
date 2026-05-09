@@ -3,14 +3,21 @@ services:
     name: wividai-engine
     env: node
     plan: free
-    buildCommand: npm install && npx puppeteer browsers install chrome
+    buildCommand: >
+      apt-get update -qq &&
+      apt-get install -y -qq chromium ffmpeg &&
+      npm install
     startCommand: node wividai-server.js
     envVars:
       - key: PORT
         value: 3000
       - key: NODE_ENV
         value: production
+      - key: CHROME_BIN
+        value: /usr/bin/chromium
+      - key: PUPPETEER_SKIP_DOWNLOAD
+        value: "true"
     disk:
       name: wividai-outputs
-      mountPath: /app/outputs
+      mountPath: /opt/render/project/src/outputs
       sizeGB: 1
