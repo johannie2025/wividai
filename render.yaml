@@ -3,14 +3,11 @@ services:
     name: wividai-engine
     env: node
     plan: free
-    buildCommand: >
-      apt-get update -qq &&
-      apt-get install -y -qq chromium ffmpeg &&
-      npm install
-    startCommand: node wividai-server.js
+    buildCommand: "apt-get update -qq && apt-get install -y -qq chromium ffmpeg && PUPPETEER_SKIP_DOWNLOAD=true npm install"
+    startCommand: "node wividai-server.js"
     envVars:
       - key: PORT
-        value: 3000
+        value: "3000"
       - key: NODE_ENV
         value: production
       - key: CHROME_BIN
