@@ -42,11 +42,10 @@ const getPuppeteerConfig = () => ({
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--autoplay-policy=no-user-gesture-required',
-        '--disable-web-security'
+        '--autoplay-policy=no-user-gesture-required'
     ],
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-    ignoreHTTPSErrors: true
+    // Supprime ou commente la ligne executablePath si elle pointe vers /usr/bin/
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null 
 });
 
 // ====================== QUEUE ======================
