@@ -197,19 +197,22 @@ async function renderVideo(job) {
         });
 
         // Nettoyage
-      // Remplace la section Nettoyage par celle-ci
-[htmlPath, audioPath, rawVideoPath].forEach(p => {
+// Remplace ton bloc de nettoyage final par celui-ci :
+const filesToCleanup = [htmlPath, audioPath, rawVideoPath];
+
+for (const p of filesToCleanup) {
     try {
         if (fs.existsSync(p)) {
-            // Vérifie si c'est un fichier avant de supprimer
-            if (fs.lstatSync(p).isFile()) {
+            const stats = fs.lstatSync(p);
+            if (stats.isFile()) {
                 fs.unlinkSync(p);
+                console.log(`[Cleanup] Supprimé : ${path.basename(p)}`);
             }
         }
     } catch (err) {
-        console.error("Erreur nettoyage fichier:", p, err.message);
+        console.error(`[Cleanup Error] Impossible de supprimer ${p}:`, err.message);
     }
-});
+}
         console.log(`✅ Vidéo terminée : ${jobId}`);
     } catch (error) {
         console.error(`❌ Échec ${jobId}:`, error.message);
