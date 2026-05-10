@@ -82,10 +82,15 @@ async function getCinematicBackground(prompt) {
 async function generateSpeech(text, outputPath) {
     try {
         const tts = new MsEdgeTTS();
+        // Correction ici : on s'assure que MsEdgeTTS utilise bien le chemin complet du fichier
         await tts.setMetadata("fr-FR-DeniseNeural", OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+        
+        // On utilise directement le chemin vers le fichier .mp3
         await tts.toFile(outputPath, text);
+        console.log(`✅ Audio généré : ${outputPath}`);
     } catch (e) {
         console.error("[TTS Error]", e.message);
+        throw e; // On renvoie l'erreur pour ne pas tenter de rendre une vidéo sans son
     }
 }
 
@@ -190,10 +195,19 @@ async function renderVideo(job) {
         });
 
         // Nettoyage
-        [htmlPath, audioPath, rawVideoPath].forEach(p => {
-            if (fs.existsSync(p)) fs.unlinkSync(p);
-        });
-
+      // Remplace la section Nettoyage par celle-ci
+[htmlPath, audioPath, rawVideoPath].forEach(p => {
+    try {
+        if (fs.existsSync(p)) {
+            // Vérifie si c'est un fichier avant de supprimer
+            if (fs.lstatSync(p).isFile()) {
+                fs.unlinkSync(p);
+            }
+        }
+    } catch (err) {
+        console.error("Erreur nettoyage fichier:", p, err.message);
+    }
+});
         console.log(`✅ Vidéo terminée : ${jobId}`);
     } catch (error) {
         console.error(`❌ Échec ${jobId}:`, error.message);
