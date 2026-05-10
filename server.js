@@ -82,15 +82,17 @@ async function getCinematicBackground(prompt) {
 async function generateSpeech(text, outputPath) {
     try {
         const tts = new MsEdgeTTS();
-        // Correction ici : on s'assure que MsEdgeTTS utilise bien le chemin complet du fichier
         await tts.setMetadata("fr-FR-DeniseNeural", OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
         
-        // On utilise directement le chemin vers le fichier .mp3
-        await tts.toFile(outputPath, text);
-        console.log(`✅ Audio généré : ${outputPath}`);
+        // On s'assure que le chemin est propre et absolu
+        const cleanPath = path.resolve(outputPath);
+        
+        console.log(`[TTS] Tentative de génération : ${cleanPath}`);
+        await tts.toFile(cleanPath, text);
+        console.log(`✅ Audio généré avec succès`);
     } catch (e) {
-        console.error("[TTS Error]", e.message);
-        throw e; // On renvoie l'erreur pour ne pas tenter de rendre une vidéo sans son
+        console.error("[TTS Error] Détails :", e.message);
+        throw e; 
     }
 }
 
