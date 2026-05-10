@@ -34,6 +34,20 @@ const unsplash = createApi({
   fetch: fetch,
 });
 
+// Config Puppeteer
+const getPuppeteerConfig = () => ({
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--disable-gpu',
+    '--autoplay-policy=no-user-gesture-required'
+  ],
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
+});
+
 // ====================== QUEUE ======================
 const jobQueue = [];
 let isProcessing = false;
@@ -42,17 +56,15 @@ async function processQueue() {
   if (isProcessing || jobQueue.length === 0) return;
   isProcessing = true;
   const job = jobQueue.shift();
-  try {
-    await renderVideo(job);
-  } catch (err) {
-    console.error(err.message);
-  } finally {
+  try { await renderVideo(job); } 
+  catch (err) { console.error(err.message); }
+  finally { 
     isProcessing = false;
     setTimeout(processQueue, 2000);
   }
 }
 
-// ====================== FONCTIONS ======================
+// ====================== HELPERS ======================
 async function getCinematicBackground(prompt) {
   try {
     const result = await unsplash.photos.getRandom({
@@ -71,7 +83,7 @@ async function generateSpeech(text, outputPath) {
   await tts.toFile(outputPath, text);
 }
 
-// ====================== TEMPLATE HTML (Speaker-aware Lip Sync) ======================
+// ====================== TEMPLATE HTML (avec renderReady) ======================
 function generateCinematicHTML(json, jobId, bgUrl) {
   return `
 <!DOCTYPE html>
@@ -93,7 +105,6 @@ function generateCinematicHTML(json, jobId, bgUrl) {
       position:absolute; 
       font-size:160px; 
       filter: drop-shadow(0 0 50px gold); 
-      transition: transform 0.08s ease-out;
     }
     .subtitle { 
       position:absolute; bottom:15%; left:50%; transform:translateX(-50%);
@@ -116,8 +127,9 @@ function generateCinematicHTML(json, jobId, bgUrl) {
   <script>
     const audio = document.getElementById('voice');
     const tl = gsap.timeline();
+    const currentSpeaker = ${json.currentSpeaker !== undefined ? json.currentSpeaker : 0};
 
-    // Ken Burns Effect
+    // Ken Burns + Fade In
     tl.fromTo("#bg", 
       { scale: 1.25, filter: "blur(8px) brightness(0.3)" }, 
       { scale: 1.05, filter: "blur(0px) brightness(0.75)", duration: 3, ease: "power2.out" }
@@ -128,10 +140,8 @@ function generateCinematicHTML(json, jobId, bgUrl) {
       tl.to("#sub${i}", { opacity: 1, duration: 0.7 }, ${i * 2});
     `).join('')}
 
-    // === Lip Sync intelligent par speaker ===
+    // Lip Sync
     let audioCtx, analyser, dataArray;
-    const currentSpeaker = ${json.currentSpeaker !== undefined ? json.currentSpeaker : 0};
-
     function initLipSync() {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaElementSource(audio);
@@ -147,11 +157,8 @@ function generateCinematicHTML(json, jobId, bgUrl) {
       analyser.getByteFrequencyData(dataArray);
       const volume = dataArray[0] / 255;
       const scaleY = 0.85 + (volume * 0.45);
-
-      // Ne fait vibrer que le personnage qui parle
       const speakerEl = document.getElementById('char' + currentSpeaker);
       if (speakerEl) gsap.set(speakerEl, { scaleY: scaleY });
-
       requestAnimationFrame(animateMouth);
     }
 
@@ -163,6 +170,8 @@ function generateCinematicHTML(json, jobId, bgUrl) {
         audioCtx.resume();
         animateMouth();
       };
+      // Signal que tout est prêt
+      window.renderReady = true;
     });
   </script>
 </body>
@@ -187,11 +196,7 @@ async function renderVideo(job) {
     const html = generateCinematicHTML(jsonData, jobId, bgUrl);
     fs.writeFileSync(htmlPath, html);
 
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--autoplay-policy=no-user-gesture-required']
-    });
-
+    const browser = await puppeteer.launch(getPuppeteerConfig());
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 720 });
 
@@ -200,21 +205,36 @@ async function renderVideo(job) {
 
     await page.goto(`http://localhost:${PORT}/temp/${jobId}.html`, { waitUntil: 'networkidle0' });
 
-    await new Promise(r => setTimeout(r, (jsonData.duration || 12) * 1000 + 1500));
+    // === ATTENTE DYNAMIQUE (meilleure que timeout fixe) ===
+    await page.waitForFunction('window.renderReady === true', { timeout: 15000 });
+
+    // Attente supplémentaire pour que l'animation commence bien
+    await new Promise(r => setTimeout(r, 800));
+
+    await new Promise(r => setTimeout(r, (jsonData.duration || 12) * 1000 + 1000));
 
     await recorder.stop();
     await browser.close();
 
+    // FFmpeg
     await new Promise((resolve, reject) => {
       ffmpeg(rawVideoPath)
-        .outputOptions(['-c:v libx264', '-preset veryfast', '-crf 22', '-pix_fmt yuv420p', '-movflags +faststart'])
+        .outputOptions([
+          '-c:v libx264',
+          '-preset veryfast',
+          '-crf 22',
+          '-pix_fmt yuv420p',
+          '-movflags +faststart'
+        ])
         .on('end', resolve)
         .on('error', reject)
         .save(finalVideoPath);
     });
 
     // Nettoyage
-    [htmlPath, rawVideoPath, audioPath].forEach(p => fs.existsSync(p) && fs.unlinkSync(p));
+    [htmlPath, rawVideoPath, audioPath].forEach(p => {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    });
 
     console.log(`✅ Vidéo terminée : ${jobId}`);
 
