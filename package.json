@@ -17,6 +17,6 @@
     "unsplash-js": "^7.0.19",
     "node-fetch": "^3.3.2",
     "uuid": "^10.0.0",
-    "msedge-tts": "^1.4.1"
+    "msedge-tts": "^1.4.5"
   }
 }
