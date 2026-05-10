@@ -1,16 +1,18 @@
-// server.js - Wividai Renderer (Version Stable Render)
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const puppeteer = require('puppeteer');
-const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
-const { v4: uuidv4 } = require('uuid');
-const { MsEdgeTTS, OUTPUT_FORMAT } = require('msedge-tts');
-const { createApi } = require('unsplash-js');
-const fetch = require('node-fetch');
+// server.js - Wividai Renderer (Version ESM - Compatible Render)
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import puppeteer from 'puppeteer';
+import { PuppeteerScreenRecorder } from 'puppeteer-screen-recorder';
+import ffmpeg from 'fluent-ffmpeg';
+import fs from 'fs';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
+import { createApi } from 'unsplash-js';
+import fetch from 'node-fetch';
+
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -56,7 +58,7 @@ async function processQueue() {
     try {
         await renderVideo(job);
     } catch (err) {
-        console.error(`[Queue Error] Job ${job?.jobId}:`, err.message);
+        console.error(`[Queue Error]`, err.message);
     } finally {
         isProcessing = false;
         setTimeout(processQueue, 2000);
@@ -119,7 +121,6 @@ function generateCinematicHTML(json, jobId, bgUrl) {
     <script>
         const audio = document.getElementById('voice');
         const scenes = ${JSON.stringify(json.scenes || [])};
-        let currentTime = 0;
 
         window.addEventListener('load', async () => {
             gsap.to("#bg", { scale: 1.08, duration: ${json.duration || 12}, ease: "none" });
@@ -127,16 +128,14 @@ function generateCinematicHTML(json, jobId, bgUrl) {
             scenes.forEach((scene, i) => {
                 setTimeout(() => {
                     document.querySelectorAll('.subtitle').forEach(s => s.style.opacity = 0);
-                    document.getElementById('sub' + i).style.opacity = 1;
-                    document.getElementById('char' + i).style.transform = 'translateX(-50%) scale(1.15)';
-                }, currentTime * 1000);
-                currentTime += (scene.duration_sec || 4);
+                    const sub = document.getElementById('sub' + i);
+                    if (sub) sub.style.opacity = 1;
+                    const char = document.getElementById('char' + i);
+                    if (char) char.style.transform = 'translateX(-50%) scale(1.15)';
+                }, (scene.startTime || i * 4) * 1000);
             });
 
-            try {
-                await audio.play();
-            } catch (e) {}
-            
+            try { await audio.play(); } catch (e) {}
             window.renderReady = true;
         });
     </script>
@@ -155,7 +154,7 @@ async function renderVideo(job) {
     try {
         const bgUrl = await getCinematicBackground(jsonData.background_prompt);
         const fullText = jsonData.scenes.map(s => s.lip_sync_text).join(". ");
-        
+
         await generateSpeech(fullText, audioPath);
         fs.writeFileSync(htmlPath, generateCinematicHTML(jsonData, jobId, bgUrl));
 
@@ -166,16 +165,13 @@ async function renderVideo(job) {
         const recorder = new PuppeteerScreenRecorder(page, { fps: 30 });
 
         await page.goto(`http://localhost:${PORT}/temp/${jobId}.html`, { waitUntil: 'networkidle0' });
-        
-        // Attente que l'animation soit prête
-        await page.waitForFunction('window.renderReady === true', { timeout: 10000 });
+        await page.waitForFunction('window.renderReady === true', { timeout: 12000 });
 
         await recorder.start(rawVideoPath);
-        await new Promise(r => setTimeout(r, (jsonData.duration || 12) * 1000 + 800));
+        await new Promise(r => setTimeout(r, (jsonData.duration || 12) * 1000 + 1000));
         await recorder.stop();
         await browser.close();
 
-        // FFmpeg corrigé
         await new Promise((resolve, reject) => {
             ffmpeg(rawVideoPath)
                 .input(audioPath)
@@ -199,7 +195,7 @@ async function renderVideo(job) {
 
         console.log(`✅ Vidéo terminée : ${jobId}`);
     } catch (error) {
-        console.error(`❌ Échec rendu ${jobId}:`, error.message);
+        console.error(`❌ Échec ${jobId}:`, error.message);
     }
 }
 
@@ -234,7 +230,7 @@ app.get('/temp/:file', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'test.html'));
+    res.sendFile(path.join(process.cwd(), 'test.html'));
 });
 
 app.listen(PORT, () => {
