@@ -1,15 +1,15 @@
 /**
- * WISE OS UNIFIED — server.js v3.1 FINAL
- * Multi-Tenant Isolation + MySQL Session Persistence
- * Compatible avec wise_os_v32.sql
+ * WISE OS UNIFIED — server.js v3.3.5 FULL + PHP PROXY
+ * Toutes les routes du Dashboard + Proxy BD via PHP
  */
 
 import express    from "express";
 import cors       from "cors";
 import qrcode     from "qrcode";
-import mysql      from "mysql2/promise";
-import nodemailer from "nodemailer";
 import dotenv     from "dotenv";
+import fs         from "fs";
+import pino       from "pino";
+import { dashboardHTML } from "./dashboard.js";
 
 dotenv.config();
 
@@ -17,252 +17,233 @@ let makeWASocket, useMultiFileAuthState, DisconnectReason, delay;
 
 (async () => {
   const baileys = await import("@whiskeysockets/baileys");
-  makeWASocket     = baileys.default;
+  makeWASocket = baileys.default;
   useMultiFileAuthState = baileys.useMultiFileAuthState;
   DisconnectReason = baileys.DisconnectReason;
-  delay            = baileys.delay;
+  delay = baileys.delay;
   startServer();
 })();
 
-// ====================== I18N ======================
-const i18n = { /* Ton système i18n complet reste ici */ };
-
-function detectLang(req) {
-  const param = req.query?.lang || req.body?.lang;
-  if (param && i18n[param]) return param;
-  const primary = (req.headers["accept-language"] || "fr").split(",")[0].split("-")[0].toLowerCase();
-  return i18n[primary] ? primary : "fr";
-}
-
-function getMessage(lang, section, key, ...args) {
-  const template = i18n[lang]?.[section]?.[key] || i18n.fr?.[section]?.[key];
-  return typeof template === "function" ? template(...args) : template || "";
-}
-
 // ====================== CONFIG ======================
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.NODE_API_KEY;
+const PHP_BACKEND = "https://wisedesign.pro/wiseos/backend/"; // ← Change si besoin
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 15,
-  charset: "utf8mb4",
-});
+const logger = pino({ level: 'silent' });
 
-const sessions = new Map();   // tenant_id → session
+const sessions = new Map();
 const sseClients = new Map();
 
-const mailer = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT || 587),
-  secure: false,
-  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-});
+const AUTH_DIR = './wa_auth';
+if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true });
 
-// ====================== DB HELPERS ======================
-async function loadSessionFromDB(tenantId) {
+// ====================== PROXY PHP ======================
+async function phpRequest(endpoint, payload = {}) {
   try {
-    const [rows] = await pool.execute(
-      "SELECT session_data FROM whatsapp_sessions WHERE tenant_id = ? LIMIT 1",
-      [tenantId]
-    );
-    return rows.length ? JSON.parse(rows[0].session_data) : null;
+    const response = await fetch(PHP_BACKEND + endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Node-Secret': process.env.NODE_SECRET || 'default_secret'
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
   } catch (e) {
-    console.error("[DB Load Session]", e.message);
-    return null;
+    console.error(`[PHP Proxy ${endpoint}]`, e.message);
+    return { success: false, error: e.message };
   }
+}
+
+// ====================== DB PROXY WRAPPERS ======================
+async function saveOTP(tenantId, phone, code, type = "default") {
+  return phpRequest('db.php', { action: 'save_otp', tenant_id: tenantId, recipient: phone, code, type });
+}
+
+async function validateOTPFromDB(tenantId, phone, code, type = "default") {
+  return phpRequest('db.php', { action: 'validate_otp', tenant_id: tenantId, recipient: phone, code, type });
+}
+
+async function loadSessionFromDB(tenantId) {
+  const res = await phpRequest('db.php', { action: 'load_session', tenant_id: tenantId });
+  return res.success && res.data ? res.data : null;
 }
 
 async function saveSessionToDB(tenantId, creds) {
-  try {
-    await pool.execute(
-      `INSERT INTO whatsapp_sessions (tenant_id, session_data, updated_at)
-       VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE session_data = VALUES(session_data), updated_at = NOW()`,
-      [tenantId, JSON.stringify(creds)]
-    );
-  } catch (e) { console.error("[DB Save Session]", e.message); }
+  await phpRequest('db.php', { action: 'save_session', tenant_id: tenantId, session_data: creds });
 }
 
-// ====================== KEEP-ALIVE ======================
-setInterval(() => {
-  console.log(`[KEEP-ALIVE] Wise OS v3.1 • ${new Date().toISOString()}`);
-}, 4 * 60 * 1000);
-
-// ====================== BROADCAST SSE ======================
-function broadcastSSE(tenantId, data) {
-  const clients = sseClients.get(String(tenantId));
-  if (!clients) return;
-  const payload = `data: ${JSON.stringify(data)}\n\n`;
-  clients.forEach(res => {
-    try { res.write(payload); } catch (_) {}
-  });
-}
-
-// ====================== WHATSAPP CORE ======================
+// ====================== WHATSAPP ======================
 async function connectWhatsApp(tenantId) {
-  // Nettoyage propre de l'ancienne session
-  if (sessions.has(tenantId)) {
-    const old = sessions.get(tenantId);
-    if (old && old.sock) {
-      try { old.sock.end(); } catch (_) {}
-    }
-    sessions.delete(tenantId);
+  const tid = String(tenantId || 1);
+  if (sessions.has(tid)) {
+    const old = sessions.get(tid);
+    if (old?.sock?.end) try { old.sock.end(); } catch (_) {}
+    sessions.delete(tid);
   }
 
-  const saved = await loadSessionFromDB(tenantId);
-  const auth = await useMultiFileAuthState(`/tmp/wa_${tenantId}`);
+  try {
+    const saved = await loadSessionFromDB(tid);
+    const { state, saveCreds } = await useMultiFileAuthState(`${AUTH_DIR}/${tid}`);
+    if (saved) Object.assign(state.creds, saved);
 
-  if (saved) Object.assign(auth.state.creds, saved);
+    const sock = makeWASocket({
+      auth: state,
+      logger,
+      browser: ["Wise OS", "Chrome", "3.3"],
+      printQRInTerminal: false,
+      markOnlineOnConnect: false,
+    });
 
-  const { state, saveCreds } = auth;
-  const sock = makeWASocket({
-    auth: state,
-    printQRInTerminal: false,
-    browser: ["Wise OS", "Chrome", "3.1"],
-  });
+    const sd = { sock, status: "connecting", qrBase64: null };
+    sessions.set(tid, sd);
 
-  const sd = { sock, status: "connecting", qrBase64: null, lastActivity: Date.now() };
-  sessions.set(tenantId, sd);
+    sock.ev.on("creds.update", async () => {
+      await saveCreds();
+      await saveSessionToDB(tid, state.creds);
+    });
 
-  sock.ev.on("creds.update", async () => {
-    await saveCreds();
-    await saveSessionToDB(tenantId, state.creds);
-  });
-
-  sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
-    sd.lastActivity = Date.now();
-
-    if (qr) {
-      sd.qrBase64 = await qrcode.toDataURL(qr, { width: 420, margin: 2 });
-      sd.status = "qr_pending";
-      broadcastSSE(tenantId, { type: "qr", qr: sd.qrBase64 });
-    }
-
-    if (connection === "open") {
-      sd.status = "connected";
-      sd.qrBase64 = null;
-      broadcastSSE(tenantId, { type: "connected" });
-      console.log(`✅ [WA] Connecté → Tenant ${tenantId}`);
-    }
-
-    if (connection === "close") {
-      broadcastSSE(tenantId, { type: "disconnected" });
-      if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
-        setTimeout(() => connectWhatsApp(tenantId), 8000);
+    sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        sd.qrBase64 = await qrcode.toDataURL(qr, { width: 300 });
+        sd.status = "qr_pending";
+        broadcastSSE(tid, { type: "qr", qr: sd.qrBase64 });
       }
-    }
-  });
+      if (connection === "open") {
+        sd.status = "connected";
+        sd.qrBase64 = null;
+        broadcastSSE(tid, { type: "connected" });
+        console.log(`✅ [WA] Tenant ${tid} connecté`);
+      }
+      if (connection === "close") {
+        broadcastSSE(tid, { type: "disconnected" });
+        if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut)
+          setTimeout(() => connectWhatsApp(tid), 12000);
+      }
+    });
+  } catch (e) { console.error(`[WA] ${tid}:`, e.message); }
 }
 
 async function sendWA(tenantId, phone, text) {
-  let sd = sessions.get(tenantId || 1);
+  const tid = String(tenantId || 1);
+  let sd = sessions.get(tid);
   if (!sd || sd.status !== "connected") {
-    await connectWhatsApp(tenantId || 1);
-    await delay(2800);
-    sd = sessions.get(tenantId || 1);
+    await connectWhatsApp(tid);
+    await delay(3500);
+    sd = sessions.get(tid);
   }
   if (!sd?.sock) return false;
-
   try {
     const jid = phone.replace(/\D/g, "") + "@s.whatsapp.net";
     await sd.sock.sendMessage(jid, { text });
     return true;
-  } catch (e) {
-    console.error("[sendWA]", e.message);
-    return false;
+  } catch (e) { console.error("[sendWA]", e.message); return false; }
+}
+
+function broadcastSSE(tenantId, data) {
+  const clients = sseClients.get(String(tenantId));
+  if (!clients) return;
+  const payload = `data: ${JSON.stringify(data)}\n\n`;
+  for (const client of [...clients]) {
+    try { client.write(payload); } catch (_) { clients.delete(client); }
   }
 }
 
-// ====================== EXPRESS ======================
+// ====================== SERVER ======================
 async function startServer() {
   const app = express();
-  app.use(cors({ origin: process.env.FRONTEND_URL || "*", credentials: true }));
+  app.use(cors({ origin: "*" }));
   app.use(express.json({ limit: "10mb" }));
 
   const auth = (req, res, next) => {
     if (!API_KEY) return next();
-    if ((req.headers["x-api-key"] || req.body?._api_key) !== API_KEY) 
-      return res.status(403).json({ error: "Unauthorized" });
+    const key = req.headers["x-api-key"] || req.body?._api_key;
+    if (key !== API_KEY) return res.status(403).json({ error: "Unauthorized" });
     next();
   };
 
-  app.get("/health", (_, res) => res.json({ status: "ok", version: "3.1" }));
+  app.get("/", (_, res) => res.send(dashboardHTML));
+  app.get("/health", (_, res) => res.json({ status: "ok", version: "3.3.5", mode: "php_proxy" }));
+  app.get("/status", (_, res) => {
+    const list = {};
+    sessions.forEach((sd, id) => list[id] = { status: sd.status });
+    res.json({ version: "3.3.5", activeSessions: sessions.size, sessions: list });
+  });
 
-  // SSE Connect
   app.get("/connect", (req, res) => {
-    const tenantId = req.query.tenant_id || req.query.user_id;
-    if (!tenantId) return res.status(400).json({ error: "tenant_id requis" });
-
+    const tid = String(req.query.tenant_id || 1);
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.flushHeaders();
 
-    if (!sseClients.has(tenantId)) sseClients.set(tenantId, new Set());
-    sseClients.get(tenantId).add(res);
+    if (!sseClients.has(tid)) sseClients.set(tid, new Set());
+    sseClients.get(tid).add(res);
 
-    const sd = sessions.get(tenantId);
-    if (sd?.status === "connected") res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
-    else connectWhatsApp(tenantId).catch(console.error);
-
-    req.on("close", () => sseClients.get(tenantId)?.delete(res));
+    connectWhatsApp(tid);
+    req.on("close", () => sseClients.get(tid)?.delete(res));
   });
 
-  // Generate OTP
+  // ====================== ROUTES DASHBOARD ======================
   app.post("/generate-otp", auth, async (req, res) => {
-    const { phone, tenant_id, type = "default", ref_name = "" } = req.body;
-    if (!phone || !tenant_id) return res.status(400).json({ error: "phone et tenant_id requis" });
+    const { phone, tenant_id = 1, type = "default", ref_name = "" } = req.body;
+    if (!phone) return res.status(400).json({ error: "phone requis" });
 
-    const lang = detectLang(req);
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    const expires = new Date(Date.now() + 10 * 60 * 1000);
+    await saveOTP(tenant_id, phone, code, type);
+    await sendWA(tenant_id, phone, `Votre code Wise OS : ${code}`);
 
-    try {
-      await pool.execute(
-        `INSERT INTO otp_codes (tenant_id, recipient, code, type, expires_at, used)
-         VALUES (?,?,?,?,?,0)
-         ON DUPLICATE KEY UPDATE code=VALUES(code), expires_at=VALUES(expires_at), used=0`,
-        [tenant_id, phone, code, type, expires]
-      );
-
-      const message = getMessage(lang, "otp", type, code, ref_name);
-      res.json({ success: true, expires_in: 600 });
-
-      sendWA(tenant_id, phone, message);
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
+    res.json({ success: true, code });
   });
 
-  // Validate OTP
   app.post("/validate-otp", auth, async (req, res) => {
-    const { phone, code, tenant_id } = req.body;
-    if (!phone || !code || !tenant_id) return res.status(400).json({ error: "phone, code, tenant_id requis" });
+    const { phone, code, context = "default", tenant_id = 1 } = req.body;
+    if (!phone || !code) return res.status(400).json({ error: "phone et code requis" });
 
-    try {
-      const [rows] = await pool.execute(
-        `SELECT id, type FROM otp_codes 
-         WHERE tenant_id = ? AND recipient = ? AND code = ? 
-         AND expires_at > NOW() AND used = 0 LIMIT 1`,
-        [tenant_id, phone, code]
-      );
-
-      if (!rows.length) return res.status(401).json({ valid: false, error: "OTP invalide ou expiré" });
-
-      await pool.execute("UPDATE otp_codes SET used = 1 WHERE id = ?", [rows[0].id]);
-      res.json({ valid: true, type: rows[0].type });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
+    const result = await validateOTPFromDB(tenant_id, phone, code, context);
+    res.json(result);
   });
 
-  app.listen(PORT, async () => {
-    console.log(`🚀 Wise OS Unified v3.1 démarré sur port ${PORT}`);
-    const centralTenant = 1;
-    connectWhatsApp(centralTenant).catch(console.error);
+  app.post("/send-message", auth, async (req, res) => {
+    const { phone, message, tenant_id = 1 } = req.body;
+    if (!phone || !message) return res.status(400).json({ error: "phone et message requis" });
+    const sent = await sendWA(tenant_id, phone, message);
+    res.json({ success: sent });
+  });
+
+  app.post("/send-magic", auth, async (req, res) => {
+    const { email, link, name = "" } = req.body;
+    if (!email || !link) return res.status(400).json({ error: "email et link requis" });
+    // Note : tu peux implémenter l'envoi d'email via PHP aussi si tu veux
+    res.json({ success: true, message: "Magic link envoyé (simulation)" });
+  });
+
+  app.post("/send-scan-notification", auth, async (req, res) => {
+    const { phone, name = "", action = "validation", tenant_id = 1 } = req.body;
+    const message = `✅ Scan ${action} : ${name}`;
+    const sent = await sendWA(tenant_id, phone, message);
+    res.json({ success: true, whatsapp: sent });
+  });
+
+  app.post("/send-sos-alert", auth, async (req, res) => {
+    const { phone, patient_name = "Patient", blood_type = "?", allergies = "?" } = req.body;
+    const message = `🚨 SOS MÉDICAL\nPatient: ${patient_name}\nGroupe: ${blood_type}\nAllergies: ${allergies}`;
+    const sent = await sendWA(1, phone, message);
+    res.json({ success: true, whatsapp: sent });
+  });
+
+  app.post("/notify-subscription", auth, async (req, res) => {
+    const { phone, amount = 0, currency = "XAF" } = req.body;
+    const message = `🎉 Abonnement Pro activé ! ${amount} ${currency} - Merci !`;
+    const sent = await sendWA(1, phone, message);
+    res.json({ success: true, whatsapp: sent });
+  });
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Wise OS v3.3.5 FULL (PHP Proxy) démarré sur port ${PORT}`);
+    setTimeout(() => connectWhatsApp(1), 10000);
   });
 }
+
+setInterval(() => console.log(`[KEEP-ALIVE] ${new Date().toISOString()}`), 240000);
