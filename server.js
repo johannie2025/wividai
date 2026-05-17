@@ -1945,26 +1945,18 @@ app.post('/api/render/sync', async (req, res) => {
     console.log(`[sync:${jobId.slice(0,8)}] Démarrage → ${tmpFile}`);
 
     // Construire la commande FFmpeg vers fichier tmp (pas pipe:1)
-    const cmdArgs = await buildFfmpegCmd(jobId, sceneGraph);
+    // buildFfmpegCmd génère une cmd pour pipe:1
+    // On extrait les args jusqu'à -movflags et on reconstruit pour fichier tmp
+    const pipeCmd = await buildFfmpegCmd(jobId, sceneGraph);
+    const movIdx = pipeCmd.indexOf('-movflags');
+    const inputAndFilters = pipeCmd.slice(0, movIdx > 0 ? movIdx : -5);
 
-    // Remplacer pipe:1 par le fichier tmp
-    const cmd = cmdArgs.slice(0, -1).concat([tmpFile]);
-    // Retirer aussi -f mp4 et frag_keyframe qui ne sont nécessaires que pour pipe
-    const cleanCmd = cmd.filter((a, i) => {
-      if (a === 'frag_keyframe+empty_moov') return false;
-      if (cmd[i-1] === '-movflags' && a === 'frag_keyframe+empty_moov') return false;
-      return true;
-    });
-    // Corriger movflags pour fichier normal
-    const finalCmd = cleanCmd.map(a =>
-      a === 'frag_keyframe+empty_moov' ? '+faststart' : a
-    );
-    // Retirer -f mp4 (inutile avec extension .mp4)
-    const cmdFinal = [];
-    for (let i = 0; i < finalCmd.length; i++) {
-      if (finalCmd[i] === '-f' && finalCmd[i+1] === 'mp4') { i++; continue; }
-      cmdFinal.push(finalCmd[i]);
-    }
+    const cmdFinal = [
+      ...inputAndFilters,
+      '-movflags', '+faststart',
+      '-y',
+      tmpFile,
+    ];
 
     console.log(`[sync:${jobId.slice(0,8)}] FFmpeg: ${FFMPEG_BIN} ${cmdFinal.slice(0,6).join(' ')} ...`);
 
