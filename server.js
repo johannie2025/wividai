@@ -110,6 +110,17 @@ function escapeDrawtext(str) {
 }
 
 /**
+ * Évalue une expression de position (ex: "w*0.15", "h/2") en pixels entiers.
+ * drawbox n'accepte PAS les expressions — on les résout côté JS.
+ */
+function evalExpr(expr, W, H) {
+  if (typeof expr === 'number') return Math.round(expr);
+  const s = String(expr).replace(/\bw\b/gi, W).replace(/\bh\b/gi, H);
+  try { return Math.round(Function(`"use strict";return (${s})`)() || 0); }
+  catch { return 0; }
+}
+
+/**
  * Convertit une couleur hex en format FFmpeg (0xRRGGBB ou 0xRRGGBBAA)
  */
 function toFFmpegColor(hex, alpha = 'ff') {
@@ -319,24 +330,21 @@ async function renderVideo(jobId, sceneGraph) {
         prevLabel = nextLabel;
 
       } else if (el.type === 'rect' || el.type === 'box') {
-        // Rectangle coloré
-        const bx = el.x || '0';
-        const by = el.y || '0';
-        const bw = el.width  || 'iw';
-        const bh = el.height || '100';
+        const bx = evalExpr(el.x || '0', W, H);
+        const by = evalExpr(el.y || '0', W, H);
+        const bw = evalExpr(el.width  || W, W, H);
+        const bh = evalExpr(el.height || '100', W, H);
         const bc = `0x${(el.color || '#ffffff').replace('#', '')}`;
         const alpha = el.opacity || 0.5;
         filters.push(`[${prevLabel}]drawbox=x=${bx}:y=${by}:w=${bw}:h=${bh}:color=${bc}@${alpha}:t=fill[${nextLabel}]`);
         prevLabel = nextLabel;
 
       } else if (el.type === 'line') {
-        // Ligne décorative
-        const lx1 = el.x1 || '0';
-        const ly1 = el.y1 || 'h/2';
-        const lx2 = el.x2 || 'w';
-        const ly2 = el.y2 || 'h/2';
+        const lx1 = evalExpr(el.x1 || '0', W, H);
+        const ly1 = evalExpr(el.y1 || 'h/2', W, H);
+        const lw  = Math.max(1, evalExpr(el.x2 || 'w', W, H) - lx1);
         const lc  = `0x${(el.color || '#f5a623').replace('#', '')}`;
-        filters.push(`[${prevLabel}]drawbox=x=${lx1}:y=${ly1}:w=${lx2}:h=3:color=${lc}:t=fill[${nextLabel}]`);
+        filters.push(`[${prevLabel}]drawbox=x=${lx1}:y=${ly1}:w=${lw}:h=3:color=${lc}:t=fill[${nextLabel}]`);
         prevLabel = nextLabel;
       }
       // D'autres types: image (overlay), watermark — à ajouter
