@@ -6,6 +6,14 @@
 
 'use strict';
 
+// ── Handlers globaux — empêche le crash sur erreurs non catchées ──
+process.on('uncaughtException', (err) => {
+  console.error('❌ uncaughtException (serveur continue):', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('❌ unhandledRejection (serveur continue):', reason?.message || reason);
+});
+
 const express  = require('express');
 const { spawn } = require('child_process');
 const { v4: uuidv4 } = require('uuid');
@@ -1958,7 +1966,7 @@ app.post('/api/render/sync', async (req, res) => {
       tmpFile,
     ];
 
-    console.log(`[sync:${jobId.slice(0,8)}] FFmpeg: ${FFMPEG_BIN} ${cmdFinal.slice(0,6).join(' ')} ...`);
+    console.log(`[sync:${jobId.slice(0,8)}] CMD: ${FFMPEG_BIN} ${cmdFinal.join(' ')}`);
 
     // Exécuter FFmpeg et attendre la fin complète
     await new Promise((resolve, reject) => {
