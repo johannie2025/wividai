@@ -228,6 +228,148 @@ function buildBackground(bg, w, h, duration, fps) {
   };
 }
 
+
+// ─────────────────────────────────────────────────────────────────
+//  buildFfmpegCmd — Construit args FFmpeg sans spawner (mode stream)
+// ─────────────────────────────────────────────────────────────────
+async function buildFfmpegCmd(jobId, sceneGraph) {
+  const fmt    = FORMATS[sceneGraph.format] || FORMATS.tiktok_vertical;
+  const W      = sceneGraph.resolution?.width  || fmt.w;
+  const H      = sceneGraph.resolution?.height || fmt.h;
+  const FPS    = sceneGraph.fps || 30;
+  const scenes = sceneGraph.scenes || [];
+  if (scenes.length === 0) throw new Error('Aucune scène définie');
+
+  const font     = findFont(false);
+  const fontBold = findFont(true);
+  const inputs   = [];
+  const filters  = [];
+  let inputIdx   = 0;
+  const sceneLabels = [];
+
+  for (let si = 0; si < scenes.length; si++) {
+    const scene    = scenes[si];
+    const duration = scene.duration || 3;
+    const bg       = scene.background || { type: 'color', color: '#000000' };
+    const elements = scene.elements   || [];
+
+    if (bg.type === 'gradient') {
+      const c1 = bg.color1 || bg.colors?.[0] || '#000000';
+      const c2 = bg.color2 || bg.colors?.[1] || '#333333';
+      const r1 = parseInt(c1.replace('#','').slice(0,2), 16);
+      const g1 = parseInt(c1.replace('#','').slice(2,4), 16);
+      const b1 = parseInt(c1.replace('#','').slice(4,6), 16);
+      const r2 = parseInt(c2.replace('#','').slice(0,2), 16);
+      const g2 = parseInt(c2.replace('#','').slice(2,4), 16);
+      const b2 = parseInt(c2.replace('#','').slice(4,6), 16);
+      inputs.push(`-f`, `lavfi`, `-i`,
+        `color=c=black:s=${W}x${H}:d=${duration}:r=${FPS}`);
+      const geq = `geq=r='${r1}+(${r2}-${r1})*Y/H':g='${g1}+(${g2}-${g1})*Y/H':b='${b1}+(${b2}-${b1})*Y/H'`;
+      filters.push(`[${inputIdx}:v]${geq},setsar=1[bg${si}]`);
+    } else {
+      const rawHex = (bg.color || '#000000').replace('#', '');
+      inputs.push(`-f`, `lavfi`, `-i`,
+        `color=c=0x${rawHex}:s=${W}x${H}:d=${duration}:r=${FPS}`);
+      filters.push(`[${inputIdx}:v]setsar=1[bg${si}]`);
+    }
+    inputIdx++;
+
+    let prevLabel = `bg${si}`;
+    for (let ei = 0; ei < elements.length; ei++) {
+      const el = elements[ei];
+      const nextLabel = `sc${si}_el${ei}`;
+      if (el.type === 'text') {
+        const fontFile  = el.style?.bold ? fontBold : font;
+        const fontsize  = el.style?.fontsize || el.style?.fontSize || 60;
+        const color     = el.style?.fontcolor || el.style?.color || '#ffffff';
+        const shadow    = el.style?.shadow ? 'shadowcolor=black@0.8:shadowx=3:shadowy=3:' : '';
+        const fontParam = fontFile ? `fontfile='${fontFile}':` : '';
+        let x = el.x || '(w-tw)/2';
+        let y = el.y || '(h-th)/2';
+        if (x === 'center') x = '(w-tw)/2';
+        if (y === 'center') y = '(h-th)/2';
+        let enableExpr = '1';
+        const anim = el.animation || {};
+        if (anim.type === 'fade_in' || anim.type === 'appear') enableExpr = `gte(t,${anim.start||0})`;
+        const textEscaped = escapeDrawtext(el.content || el.text || '');
+        const dt = `drawtext=${fontParam}text='${textEscaped}':fontsize=${fontsize}:fontcolor=${color}:x=${x}:y=${y}:${shadow}enable='${enableExpr}'`;
+        filters.push(`[${prevLabel}]${dt}[${nextLabel}]`);
+        prevLabel = nextLabel;
+      } else if (el.type === 'rect' || el.type === 'box') {
+        const bx = evalExpr(el.x||'0',W,H), by = evalExpr(el.y||'0',W,H);
+        const bw = evalExpr(el.width||W,W,H), bh = evalExpr(el.height||'100',W,H);
+        const bc = `0x${(el.color||'#ffffff').replace('#','')}`;
+        filters.push(`[${prevLabel}]drawbox=x=${bx}:y=${by}:w=${bw}:h=${bh}:color=${bc}@${el.opacity||0.5}:t=fill[${nextLabel}]`);
+        prevLabel = nextLabel;
+      } else if (el.type === 'line') {
+        const lx1 = evalExpr(el.x1||'0',W,H), ly1 = evalExpr(el.y1||'h/2',W,H);
+        const lw  = Math.max(1, evalExpr(el.x2||'w',W,H) - lx1);
+        const lc  = `0x${(el.color||'#f5a623').replace('#','')}`;
+        filters.push(`[${prevLabel}]drawbox=x=${lx1}:y=${ly1}:w=${lw}:h=3:color=${lc}:t=fill[${nextLabel}]`);
+        prevLabel = nextLabel;
+      }
+    }
+    filters.push(`[${prevLabel}]null[scene${si}]`);
+    sceneLabels.push(`scene${si}`);
+  }
+
+  let finalLabel;
+  if (sceneLabels.length === 1) {
+    finalLabel = sceneLabels[0];
+  } else {
+    const transitions = sceneGraph.transitions || [];
+    const transMap = {};
+    for (const t of transitions) {
+      const fromIdx = scenes.findIndex(s => s.id === t.from);
+      if (fromIdx >= 0) transMap[fromIdx] = t;
+    }
+    let current = sceneLabels[0];
+    let cumulDuration = scenes[0]?.duration || 3;
+    for (let i = 1; i < sceneLabels.length; i++) {
+      const trans     = transMap[i - 1];
+      const transDur  = trans?.duration || 0.5;
+      const transType = XFADE_TRANSITIONS.includes(trans?.type) ? trans.type : 'fade';
+      const offset    = Math.max(0, cumulDuration - transDur);
+      const xfLabel   = `xf${i}`;
+      filters.push(`[${current}][${sceneLabels[i]}]xfade=transition=${transType}:duration=${transDur}:offset=${offset}[${xfLabel}]`);
+      current = xfLabel;
+      cumulDuration += (scenes[i]?.duration || 3) - transDur;
+    }
+    finalLabel = current;
+  }
+
+  const audio = sceneGraph.audio || { type: 'none' };
+  let hasAudio = false;
+  if (audio.type === 'file' && audio.path && fs.existsSync(audio.path)) {
+    inputs.push(`-i`, audio.path);
+    hasAudio = true;
+    inputIdx++;
+  }
+  const silentIdx = inputIdx;
+  if (!hasAudio) inputs.push(`-f`, `lavfi`, `-i`, `anullsrc=channel_layout=stereo:sample_rate=44100`);
+
+  const filterStr   = filters.join('; ');
+  const audioMapIdx = hasAudio ? inputIdx - 1 : silentIdx;
+
+  return [
+    ...inputs,
+    `-filter_complex`, filterStr,
+    `-map`, `[${finalLabel}]`,
+    `-map`, `${audioMapIdx}:a`,
+    `-shortest`,
+    `-c:v`, `libx264`,
+    `-preset`, `fast`,
+    `-crf`, `23`,
+    `-pix_fmt`, `yuv420p`,
+    `-c:a`, `aac`,
+    `-b:a`, `128k`,
+    `-movflags`, `frag_keyframe+empty_moov`,
+    `-f`, `mp4`,
+    `-y`,
+    `pipe:1`,
+  ];
+}
+
 /**
  * Render principal : sceneGraph → MP4
  * Retourne le chemin du fichier généré
@@ -250,7 +392,7 @@ async function renderVideo(jobId, sceneGraph) {
 
   if (scenes.length === 0) throw new Error('Aucune scène définie');
 
-  const outputFile = path.join(RENDER_DIR, `${jobId}.mp4`);
+  const outputFile = null; // mode stream: pas de fichier
   const font       = findFont(false);
   const fontBold   = findFont(true);
   log(`Résolution: ${W}x${H} @ ${FPS}fps — ${scenes.length} scène(s)`);
@@ -429,9 +571,10 @@ async function renderVideo(jobId, sceneGraph) {
     `-pix_fmt`, `yuv420p`,
     `-c:a`, `aac`,
     `-b:a`, `128k`,
-    `-movflags`, `+faststart`,
+    `-movflags`, `frag_keyframe+empty_moov`,
+    `-f`, `mp4`,
     `-y`,
-    outputFile,
+    `pipe:1`,
   ];
 
   log(`Commande FFmpeg: ${FFMPEG_BIN} ${cmd.slice(0, 8).join(' ')} ...`);
@@ -568,13 +711,12 @@ app.get('/api/download/:id', (req, res) => {
   if (job.status !== 'done') return res.status(202).json({ error: 'Pas encore prêt', status: job.status });
   if (!fs.existsSync(job.outputFile)) return res.status(404).json({ error: 'Fichier introuvable' });
 
-  // REMPLACER PAR :
-const stat = fs.statSync(job.outputFile);
-res.setHeader('Content-Type', 'video/mp4');
-res.setHeader('Content-Disposition', `inline; filename="intentfilm_${job.id.slice(0,8)}.mp4"`);
-res.setHeader('Content-Length', stat.size);
-res.setHeader('Accept-Ranges', 'bytes');
-fs.createReadStream(job.outputFile).pipe(res);
+  const stat = fs.statSync(job.outputFile);
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Content-Disposition', `inline; filename="intentfilm_${job.id.slice(0,8)}.mp4"`);
+  res.setHeader('Content-Length', stat.size);
+  res.setHeader('Accept-Ranges', 'bytes');
+  fs.createReadStream(job.outputFile).pipe(res);
 });
 
 // GET /api/example — Retourne un exemple de scene graph
@@ -1695,17 +1837,33 @@ async function startRender() {
 
     showStatus('rendering', '⚙️ Rendu démarré…', 5);
 
-    const res = await fetch('/api/render', {
+    showStatus('rendering', '⚙️ Rendu en cours… (patienter 10–30s)', 20);
+
+    const res = await fetch('/api/render/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
 
-    if (!res.ok) throw new Error(data.error || 'Erreur serveur');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Erreur serveur' }));
+      throw new Error(err.error || 'Erreur serveur');
+    }
 
-    showStatus('rendering', \`Job \${data.jobId.slice(0,8)} en file d'attente…\`, 5);
-    pollJob(data.jobId);
+    showStatus('rendering', '⬇️ Réception vidéo…', 80);
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+
+    showStatus('done', '✓ Vidéo prête !', 100);
+    document.getElementById('video-container').innerHTML =
+      '<video controls autoplay loop src="' + url + '" style="width:100%;height:100%;object-fit:contain"></video>';
+    const dl   = document.getElementById('download-area');
+    const link = document.getElementById('download-link');
+    link.href     = url;
+    link.download = 'intentfilm_video.mp4';
+    dl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = '▶ GÉNÉRER';
 
   } catch (e) {
     showStatus('error', '✗ ' + e.message, 0);
@@ -1766,6 +1924,45 @@ window.addEventListener('load', () => {
 </script>
 </body>
 </html>`;
+
+
+// ─────────────────────────────────────────────────────────────────
+//  POST /api/render/sync — Stream MP4 direct (pas de stockage fichier)
+// ─────────────────────────────────────────────────────────────────
+app.post('/api/render/sync', async (req, res) => {
+  try {
+    let sceneGraph = req.body;
+    if (typeof sceneGraph === 'string') sceneGraph = JSON.parse(sceneGraph);
+    if (sceneGraph.json) sceneGraph = typeof sceneGraph.json === 'string'
+      ? JSON.parse(sceneGraph.json) : sceneGraph.json;
+    if (!sceneGraph.scenes || !Array.isArray(sceneGraph.scenes))
+      return res.status(400).json({ error: '"scenes" requis' });
+
+    const jobId = uuidv4();
+    console.log(`[sync:${jobId.slice(0,8)}] Démarrage rendu stream`);
+    const cmd = await buildFfmpegCmd(jobId, sceneGraph);
+
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', 'inline; filename="video.mp4"');
+
+    const proc = spawn(FFMPEG_BIN, cmd, { stdio: ['ignore', 'pipe', 'pipe'] });
+    proc.stdout.pipe(res);
+
+    let errOut = '';
+    proc.stderr.on('data', d => { errOut += d.toString(); });
+    proc.on('close', code => {
+      if (code !== 0) console.error(`[sync:${jobId.slice(0,8)}] FFmpeg erreur:`, errOut.slice(-800));
+      else console.log(`[sync:${jobId.slice(0,8)}] Terminé OK`);
+    });
+    proc.on('error', e => {
+      if (!res.headersSent) res.status(500).json({ error: e.message });
+    });
+    req.on('close', () => proc.kill());
+
+  } catch (e) {
+    if (!res.headersSent) res.status(400).json({ error: e.message });
+  }
+});
 
 // ── Landing page route ────────────────────────────────────────────
 app.get('/', (req, res) => res.type('html').send(HTML_PAGE));
