@@ -485,7 +485,7 @@ async function processJob(jobId) {
 
   try {
     const outputFile = await renderVideo(jobId, job.sceneGraph);
-    const downloadUrl = `${BASE_URL}/api/download/${jobId}`;
+    const downloadUrl = `/api/download/${jobId}`;
 
     updateJob(jobId, {
       status:      'done',
@@ -568,9 +568,13 @@ app.get('/api/download/:id', (req, res) => {
   if (job.status !== 'done') return res.status(202).json({ error: 'Pas encore prêt', status: job.status });
   if (!fs.existsSync(job.outputFile)) return res.status(404).json({ error: 'Fichier introuvable' });
 
-  res.setHeader('Content-Type', 'video/mp4');
-  res.setHeader('Content-Disposition', `inline; filename="intentfilm_${job.id.slice(0,8)}.mp4"`);
-  fs.createReadStream(job.outputFile).pipe(res);
+  // REMPLACER PAR :
+const stat = fs.statSync(job.outputFile);
+res.setHeader('Content-Type', 'video/mp4');
+res.setHeader('Content-Disposition', `inline; filename="intentfilm_${job.id.slice(0,8)}.mp4"`);
+res.setHeader('Content-Length', stat.size);
+res.setHeader('Accept-Ranges', 'bytes');
+fs.createReadStream(job.outputFile).pipe(res);
 });
 
 // GET /api/example — Retourne un exemple de scene graph
@@ -1576,149 +1580,190 @@ footer{
 <script>
 const EXAMPLE_JSON = ${JSON.stringify(EXAMPLE_SCENE_GRAPH, null, 2)};
 
-let pollTimer = null;
-let currentJobId = null;
-let currentTab = 'json';
-
-// Switch tabs
-function switchTab(tab) {
-  currentTab = tab;
-  document.querySelectorAll('.tab').forEach(function(t) {
-    t.classList.remove('active');
-  });
-  document.querySelectorAll('.tab-content').forEach(function(c) {
-    c.classList.remove('active');
-  });
-  
-  if (tab === 'json') {
-    document.querySelectorAll('.tab')[0].classList.add('active');
-    document.getElementById('tab-json').classList.add('active');
-  } else {
-    document.querySelectorAll('.tab')[1].classList.add('active');
-    document.getElementById('tab-text').classList.add('active');
-  }
+// Templates communauté (placeholders pour démo)
+const TEMPLATES = {
+  motivation: {
+    ...EXAMPLE_JSON,
+    title: "Template Motivation",
+    scenes: EXAMPLE_JSON.scenes.map(s => ({
+      ...s,
+      background: { type: 'gradient', color1: '#0d0700', color2: '#2a1000' },
+      elements: s.elements.map(el => el.type === 'text'
+        ? { ...el, style: { ...(el.style||{}), fontcolor: '#f5a623' } }
+        : el)
+    }))
+  },
+  finance: {
+    ...EXAMPLE_JSON,
+    title: "Template Finance",
+    scenes: [{
+      id: 'hook', duration: 4,
+      background: { type: 'color', color: '#020a02' },
+      elements: [
+        { type: 'text', content: '💰 5 ASTUCES', x: '(w-tw)/2', y: 'h*0.25',
+          style: { fontsize: 85, fontcolor: '#00ff88', bold: true, shadow: true } },
+        { type: 'text', content: 'pour investir en Afrique', x: '(w-tw)/2', y: 'h*0.25+100',
+          style: { fontsize: 40, fontcolor: '#ffffff' } },
+        { type: 'text', content: 'même avec 10 000 FCFA', x: '(w-tw)/2', y: 'h*0.55',
+          style: { fontsize: 36, fontcolor: '#aaaaaa' } }
+      ]
+    }],
+    transitions: []
+  },
+};
+for (const t of ['lifestyle','business','sport','tech']) {
+  TEMPLATES[t] = { ...EXAMPLE_JSON, title: \`Template \${t.charAt(0).toUpperCase()+t.slice(1)}\` };
 }
 
-// Load example
+// ── Tabs ──────────────────────────────────────────────────────
+let currentTab = 'json';
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach((t,i) => {
+    t.classList.toggle('active', (i === 0 && tab === 'json') || (i === 1 && tab === 'text'));
+  });
+  document.getElementById('tab-json').classList.toggle('active', tab === 'json');
+  document.getElementById('tab-text').classList.toggle('active', tab === 'text');
+}
+
+// ── Load Example ─────────────────────────────────────────────
 function loadExample() {
   document.getElementById('json-input').value = JSON.stringify(EXAMPLE_JSON, null, 2);
   switchTab('json');
 }
-
+function loadTemplate(name) {
+  const t = TEMPLATES[name] || EXAMPLE_JSON;
+  document.getElementById('json-input').value = JSON.stringify(t, null, 2);
+  switchTab('json');
+  document.getElementById('studio').scrollIntoView({ behavior: 'smooth' });
+}
 function formatJSON() {
   try {
-    var val = document.getElementById('json-input').value;
+    const val = document.getElementById('json-input').value;
     document.getElementById('json-input').value = JSON.stringify(JSON.parse(val), null, 2);
   } catch(e) {
-    alert('JSON invalide');
+    showStatus('error', 'JSON invalide: ' + e.message, 0);
   }
 }
 
+// ── Status UI ─────────────────────────────────────────────────
 function showStatus(type, msg, progress) {
-  var box = document.getElementById('status-box');
-  var color = (type === 'done') ? '#4ade80' : (type === 'error') ? '#ff5555' : '#f5a623';
-  var html = '<span style="color:' + color + ';font-weight:600">' + msg + '</span>';
-  
-  if (progress !== undefined && progress > 0) {
-    html += '<div class="progress-bar"><div class="progress-fill" style="width:' + progress + '%"></div></div>';
-  }
-  box.innerHTML = html;
+  const box = document.getElementById('status-box');
+  const cls = type === 'done' ? 'status-done' : type === 'error' ? 'status-error' : 'status-rendering';
+  box.innerHTML = \`<span class="\${cls} \${type==='rendering'?'pulsing':''}">\${msg}</span>
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:\${progress}%"></div></div>\`;
 }
+
+// ── Render ────────────────────────────────────────────────────
+let pollTimer = null;
 
 async function startRender() {
-  var btn = document.getElementById('render-btn');
+  const btn = document.getElementById('render-btn');
   btn.disabled = true;
-  btn.textContent = '⏳ GÉNÉRATION...';
-
+  btn.textContent = '⏳ EN COURS…';
   document.getElementById('download-area').style.display = 'none';
+  document.getElementById('log-box').classList.remove('visible');
+  document.getElementById('video-container').innerHTML = \`
+    <div class="video-placeholder">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><polygon points="5,3 19,12 5,21"/></svg>
+      <span class="pulsing">Génération en cours…</span>
+    </div>\`;
 
   try {
-    var payload;
+    let payload;
 
     if (currentTab === 'json') {
-      var raw = document.getElementById('json-input').value.trim();
-      if (!raw) throw new Error("Collez un JSON ou cliquez sur 'Charger l'exemple'");
+      const raw = document.getElementById('json-input').value.trim();
+      if (!raw) throw new Error('Colle un JSON ou charge un exemple d\\'abord');
       payload = JSON.parse(raw);
     } else {
-      var prompt = document.getElementById('text-prompt').value.trim();
-      if (!prompt) throw new Error("Décris ta vidéo");
-      showStatus('rendering', '🤖 IA en cours...', 20);
-      // Mode IA stub
+      // Mode texte: envoyer le prompt au endpoint AI (à implémenter)
+      const prompt = document.getElementById('text-prompt').value.trim();
+      if (!prompt) throw new Error('Décris ta vidéo en quelques mots');
+      showStatus('rendering', '🤖 Génération du Scene Graph via IA…', 10);
       const aiRes = await fetch('/api/ai/generate', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({prompt: prompt})
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, format: document.getElementById('format-select').value })
       });
+      if (!aiRes.ok) throw new Error('IA non configurée. Utilise le mode JSON pour tester.');
       payload = await aiRes.json();
     }
 
-    payload.format = document.getElementById('format-select').value || payload.format || 'tiktok_vertical';
+    // Override format
+    payload.format = document.getElementById('format-select').value || payload.format;
 
-    showStatus('rendering', '🚀 Lancement du rendu...', 30);
+    showStatus('rendering', '⚙️ Rendu démarré…', 5);
 
-    var res = await fetch('/api/render', {
+    const res = await fetch('/api/render', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-
-    var data = await res.json();
+    const data = await res.json();
 
     if (!res.ok) throw new Error(data.error || 'Erreur serveur');
 
-    currentJobId = data.jobId;
-    showStatus('rendering', '⚙️ Rendu en cours...', 40);
-    startPolling(currentJobId);
+    showStatus('rendering', \`Job \${data.jobId.slice(0,8)} en file d'attente…\`, 5);
+    pollJob(data.jobId);
 
   } catch (e) {
-    showStatus('error', '❌ ' + e.message, 0);
+    showStatus('error', '✗ ' + e.message, 0);
     btn.disabled = false;
     btn.textContent = '▶ GÉNÉRER';
   }
 }
 
-function startPolling(jobId) {
+function pollJob(jobId) {
   if (pollTimer) clearInterval(pollTimer);
-
-  pollTimer = setInterval(async function() {
+  pollTimer = setInterval(async () => {
     try {
-      var res = await fetch('/api/status/' + jobId);
-      var job = await res.json();
+      const res  = await fetch(\`/api/status/\${jobId}\`);
+      const data = await res.json();
 
-      if (job.status === 'rendering') {
-        showStatus('rendering', '⚙️ Rendu en cours — ' + job.progress + '%', job.progress);
-      } 
-      else if (job.status === 'done') {
+      if (data.status === 'rendering') {
+        showStatus('rendering', \`⚙️ Rendu en cours… \${data.progress}%\`, data.progress);
+      } else if (data.status === 'done') {
         clearInterval(pollTimer);
-        showStatus('done', '✅ Vidéo terminée !', 100);
+        showStatus('done', '✓ Vidéo prête !', 100);
 
-        var container = document.getElementById('video-container');
-        container.innerHTML = '<video controls autoplay loop style="width:100%;height:100%;object-fit:contain">' +
-                              '<source src="' + job.downloadUrl + '" type="video/mp4"></video>';
+        // Afficher la vidéo
+        const vc = document.getElementById('video-container');
+        vc.innerHTML = \`<video controls autoplay loop src="\${data.downloadUrl}" style="width:100%;height:100%;object-fit:contain"></video>\`;
 
-        var dlArea = document.getElementById('download-area');
-        document.getElementById('download-link').href = job.downloadUrl;
-        dlArea.style.display = 'block';
+        // Lien téléchargement
+        const dl = document.getElementById('download-area');
+        const link = document.getElementById('download-link');
+        link.href = data.downloadUrl;
+        link.download = 'intentfilm_video.mp4';
+        dl.style.display = 'block';
 
         document.getElementById('render-btn').disabled = false;
         document.getElementById('render-btn').textContent = '▶ GÉNÉRER';
-      } 
-      else if (job.status === 'error') {
+
+      } else if (data.status === 'error') {
         clearInterval(pollTimer);
-        showStatus('error', '❌ ' + (job.error || 'Erreur inconnue'), 0);
+        showStatus('error', '✗ Erreur: ' + (data.error||'inconnue'), 0);
+        const log = document.getElementById('log-box');
+        log.textContent = data.error || '';
+        log.classList.add('visible');
         document.getElementById('render-btn').disabled = false;
         document.getElementById('render-btn').textContent = '▶ GÉNÉRER';
       }
-    } catch(err) {}
+    } catch(e) {
+      // réseau — on continue le polling
+    }
   }, 2000);
 }
 
-// Init
-window.onload = function() {
-  loadExample();
-};
+// ── Charger l'exemple au démarrage pour info ─────────────────
+window.addEventListener('load', () => {
+  const ta = document.getElementById('json-input');
+  if (!ta.value) {
+    ta.placeholder = 'Colle ton JSON ici ou clique "Charger l\\'exemple" ↓\\n\\nFormat attendu:\\n{\\n  "title": "Ma Vidéo",\\n  "format": "tiktok_vertical",\\n  "fps": 30,\\n  "scenes": [...],\\n  "transitions": [...],\\n  "audio": { "type": "none" }\\n}';
+  }
+});
 </script>
-
 </body>
 </html>`;
 
