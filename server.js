@@ -39,12 +39,12 @@ const OPENROUTER_KEY  = process.env.OPENROUTER_API_KEY || '';
 
 // Formats supportés
 const FORMATS = {
-  tiktok_vertical:   { w: 1080, h: 1920, label: 'TikTok / Reels / Shorts' },
-  youtube_landscape: { w: 1920, h: 1080, label: 'YouTube paysage' },
-  youtube_shorts:    { w: 1080, h: 1920, label: 'YouTube Shorts' },
-  instagram_square:  { w: 1080, h: 1080, label: 'Instagram carré' },
-  instagram_story:   { w: 1080, h: 1920, label: 'Instagram Story' },
-  twitter_landscape: { w: 1280, h: 720,  label: 'X / Twitter' },
+  tiktok_vertical:   { w: 540,  h: 960,  label: 'TikTok / Reels / Shorts' },
+  youtube_landscape: { w: 960,  h: 540,  label: 'YouTube paysage' },
+  youtube_shorts:    { w: 540,  h: 960,  label: 'YouTube Shorts' },
+  instagram_square:  { w: 720,  h: 720,  label: 'Instagram carré' },
+  instagram_story:   { w: 540,  h: 960,  label: 'Instagram Story' },
+  twitter_landscape: { w: 854,  h: 480,  label: 'X / Twitter' },
 };
 
 // Transitions FFmpeg disponibles
@@ -366,8 +366,10 @@ async function buildFfmpegCmd(jobId, sceneGraph) {
     `-map`, `${audioMapIdx}:a`,
     `-shortest`,
     `-c:v`, `libx264`,
-    `-preset`, `fast`,
-    `-crf`, `23`,
+    `-preset`, `ultrafast`,
+    `-crf`, `28`,
+    `-threads`, `1`,
+    `-x264-params`, `threads=1`,
     `-pix_fmt`, `yuv420p`,
     `-c:a`, `aac`,
     `-b:a`, `128k`,
