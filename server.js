@@ -597,6 +597,9 @@ app.get('/health', (req, res) => res.json({ ok: true, version: '1.0.0' }));
 //  EXEMPLE DE SCENE GRAPH JSON
 //  (Que n'importe quelle IA peut générer)
 // ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+//  EXEMPLE DE SCENE GRAPH JSON (corrigé pour 1080x1920)
+// ─────────────────────────────────────────────────────────────────
 const EXAMPLE_SCENE_GRAPH = {
   "title": "Ma Première Vidéo INTENTFILM",
   "format": "tiktok_vertical",
@@ -614,7 +617,7 @@ const EXAMPLE_SCENE_GRAPH = {
           "type": "text",
           "content": "INTENTFILM",
           "x": "(w-tw)/2",
-          "y": "(h-th)/2-80",
+          "y": "460",                    // ≈ (1920/2 - 80)
           "style": {
             "fontsize": 110,
             "fontcolor": "#f5a623",
@@ -627,7 +630,7 @@ const EXAMPLE_SCENE_GRAPH = {
           "type": "text",
           "content": "Tu décris. Le moteur génère.",
           "x": "(w-tw)/2",
-          "y": "(h-th)/2+60",
+          "y": "620",
           "style": {
             "fontsize": 38,
             "fontcolor": "#cccccc"
@@ -636,10 +639,10 @@ const EXAMPLE_SCENE_GRAPH = {
         },
         {
           "type": "line",
-          "x1": "w*0.15",
-          "y1": "h/2",
-          "x2": "w*0.7",
-          "y2": "h/2",
+          "x1": 162,          // 1080 * 0.15
+          "y1": 860,
+          "x2": 756,          // 1080 * 0.7
+          "y2": 860,
           "color": "#f5a623"
         }
       ]
@@ -656,8 +659,8 @@ const EXAMPLE_SCENE_GRAPH = {
         {
           "type": "rect",
           "x": "0",
-          "y": "h*0.3",
-          "width": "w",
+          "y": "576",           // 1920 * 0.3
+          "width": "1080",
           "height": "200",
           "color": "#f5a623",
           "opacity": 0.12
@@ -666,7 +669,7 @@ const EXAMPLE_SCENE_GRAPH = {
           "type": "text",
           "content": "🎬 100 000 vues",
           "x": "(w-tw)/2",
-          "y": "h*0.32",
+          "y": "616",
           "style": {
             "fontsize": 72,
             "fontcolor": "#ffffff",
@@ -677,7 +680,7 @@ const EXAMPLE_SCENE_GRAPH = {
           "type": "text",
           "content": "en 24 heures",
           "x": "(w-tw)/2",
-          "y": "h*0.32+90",
+          "y": "706",
           "style": {
             "fontsize": 50,
             "fontcolor": "#f5a623"
@@ -687,7 +690,7 @@ const EXAMPLE_SCENE_GRAPH = {
           "type": "text",
           "content": "avec la bonne vidéo.",
           "x": "(w-tw)/2",
-          "y": "h*0.6",
+          "y": "1152",
           "style": {
             "fontsize": 36,
             "fontcolor": "#aaaaaa"
@@ -708,7 +711,7 @@ const EXAMPLE_SCENE_GRAPH = {
           "type": "text",
           "content": "Génère ta vidéo",
           "x": "(w-tw)/2",
-          "y": "h*0.35",
+          "y": "672",
           "style": {
             "fontsize": 70,
             "fontcolor": "#ffffff",
@@ -720,7 +723,7 @@ const EXAMPLE_SCENE_GRAPH = {
           "type": "text",
           "content": "GRATUITEMENT",
           "x": "(w-tw)/2",
-          "y": "h*0.35+90",
+          "y": "762",
           "style": {
             "fontsize": 80,
             "fontcolor": "#ff4444",
@@ -731,7 +734,7 @@ const EXAMPLE_SCENE_GRAPH = {
           "type": "text",
           "content": "intentfilm.com",
           "x": "(w-tw)/2",
-          "y": "h*0.7",
+          "y": "1344",
           "style": {
             "fontsize": 42,
             "fontcolor": "#f5a623"
@@ -741,18 +744,8 @@ const EXAMPLE_SCENE_GRAPH = {
     }
   ],
   "transitions": [
-    {
-      "from": "intro",
-      "to": "hook",
-      "type": "fade",
-      "duration": 0.5
-    },
-    {
-      "from": "hook",
-      "to": "cta",
-      "type": "wipeup",
-      "duration": 0.6
-    }
+    { "from": "intro", "to": "hook", "type": "fade",      "duration": 0.5 },
+    { "from": "hook",  "to": "cta",  "type": "wipeup",    "duration": 0.6 }
   ],
   "audio": {
     "type": "none"
