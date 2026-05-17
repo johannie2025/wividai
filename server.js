@@ -1578,22 +1578,28 @@ const EXAMPLE_JSON = ${JSON.stringify(EXAMPLE_SCENE_GRAPH, null, 2)};
 
 let pollTimer = null;
 let currentJobId = null;
+let currentTab = 'json';
 
-// Tabs
+// Switch tabs
 function switchTab(tab) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(function(t) {
+    t.classList.remove('active');
+  });
+  document.querySelectorAll('.tab-content').forEach(function(c) {
+    c.classList.remove('active');
+  });
   
   if (tab === 'json') {
-    document.querySelector('.tab:nth-child(1)').classList.add('active');
+    document.querySelectorAll('.tab')[0].classList.add('active');
     document.getElementById('tab-json').classList.add('active');
   } else {
-    document.querySelector('.tab:nth-child(2)').classList.add('active');
+    document.querySelectorAll('.tab')[1].classList.add('active');
     document.getElementById('tab-text').classList.add('active');
   }
 }
 
-// Charger exemple
+// Load example
 function loadExample() {
   document.getElementById('json-input').value = JSON.stringify(EXAMPLE_JSON, null, 2);
   switchTab('json');
@@ -1601,131 +1607,116 @@ function loadExample() {
 
 function formatJSON() {
   try {
-    const val = document.getElementById('json-input').value;
+    var val = document.getElementById('json-input').value;
     document.getElementById('json-input').value = JSON.stringify(JSON.parse(val), null, 2);
-    showStatus('rendering', 'JSON formaté', 0);
   } catch(e) {
-    showStatus('error', 'JSON invalide : ' + e.message, 0);
+    alert('JSON invalide');
   }
 }
 
-// Status
-function showStatus(type, msg, progress = 0) {
-  const box = document.getElementById('status-box');
-  let html = `<span class="${type}">${msg}</span>`;
+function showStatus(type, msg, progress) {
+  var box = document.getElementById('status-box');
+  var color = (type === 'done') ? '#4ade80' : (type === 'error') ? '#ff5555' : '#f5a623';
+  var html = '<span style="color:' + color + ';font-weight:600">' + msg + '</span>';
   
-  if (progress > 0) {
-    html += `<div class="progress-bar"><div class="progress-fill" style="width:${progress}%"></div></div>`;
+  if (progress !== undefined && progress > 0) {
+    html += '<div class="progress-bar"><div class="progress-fill" style="width:' + progress + '%"></div></div>';
   }
   box.innerHTML = html;
 }
 
-// Render principal
 async function startRender() {
-  const btn = document.getElementById('render-btn');
+  var btn = document.getElementById('render-btn');
   btn.disabled = true;
-  btn.textContent = '⏳ GÉNÉRATION EN COURS...';
+  btn.textContent = '⏳ GÉNÉRATION...';
 
   document.getElementById('download-area').style.display = 'none';
 
   try {
-    let payload;
+    var payload;
 
     if (currentTab === 'json') {
-      const raw = document.getElementById('json-input').value.trim();
-      if (!raw) throw new Error("Collez un JSON ou chargez l'exemple");
+      var raw = document.getElementById('json-input').value.trim();
+      if (!raw) throw new Error("Collez un JSON ou cliquez sur 'Charger l'exemple'");
       payload = JSON.parse(raw);
     } else {
-      // Mode texte (IA)
-      const prompt = document.getElementById('text-prompt').value.trim();
-      if (!prompt) throw new Error("Entrez une description");
-      showStatus('rendering', '🤖 IA en cours...', 10);
-      
+      var prompt = document.getElementById('text-prompt').value.trim();
+      if (!prompt) throw new Error("Décris ta vidéo");
+      showStatus('rendering', '🤖 IA en cours...', 20);
+      // Mode IA stub
       const aiRes = await fetch('/api/ai/generate', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ prompt, format: document.getElementById('format-select').value })
+        body: JSON.stringify({prompt: prompt})
       });
-      if (!aiRes.ok) throw new Error('Mode IA non disponible pour le moment');
       payload = await aiRes.json();
     }
 
-    payload.format = document.getElementById('format-select').value || payload.format;
+    payload.format = document.getElementById('format-select').value || payload.format || 'tiktok_vertical';
 
-    showStatus('rendering', '🚀 Envoi du job...', 15);
+    showStatus('rendering', '🚀 Lancement du rendu...', 30);
 
-    const res = await fetch('/api/render', {
+    var res = await fetch('/api/render', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
     });
 
-    const data = await res.json();
+    var data = await res.json();
 
     if (!res.ok) throw new Error(data.error || 'Erreur serveur');
 
     currentJobId = data.jobId;
-    showStatus('rendering', `Job ${currentJobId.slice(0,8)} démarré...`, 20);
-
+    showStatus('rendering', '⚙️ Rendu en cours...', 40);
     startPolling(currentJobId);
 
   } catch (e) {
     showStatus('error', '❌ ' + e.message, 0);
-    resetButton();
+    btn.disabled = false;
+    btn.textContent = '▶ GÉNÉRER';
   }
 }
 
 function startPolling(jobId) {
   if (pollTimer) clearInterval(pollTimer);
 
-  pollTimer = setInterval(async () => {
+  pollTimer = setInterval(async function() {
     try {
-      const res = await fetch(`/api/status/${jobId}`);
-      const job = await res.json();
+      var res = await fetch('/api/status/' + jobId);
+      var job = await res.json();
 
       if (job.status === 'rendering') {
-        showStatus('rendering', `⚙️ Rendu en cours — ${job.progress}%`, job.progress);
+        showStatus('rendering', '⚙️ Rendu en cours — ' + job.progress + '%', job.progress);
       } 
       else if (job.status === 'done') {
         clearInterval(pollTimer);
         showStatus('done', '✅ Vidéo terminée !', 100);
 
-        // Affichage vidéo
-        const container = document.getElementById('video-container');
-        container.innerHTML = `
-          <video controls autoplay loop style="width:100%; height:100%; object-fit:contain;">
-            <source src="${job.downloadUrl}" type="video/mp4">
-          </video>`;
+        var container = document.getElementById('video-container');
+        container.innerHTML = '<video controls autoplay loop style="width:100%;height:100%;object-fit:contain">' +
+                              '<source src="' + job.downloadUrl + '" type="video/mp4"></video>';
 
-        // Bouton download
-        const dlArea = document.getElementById('download-area');
-        const dlLink = document.getElementById('download-link');
-        dlLink.href = job.downloadUrl;
+        var dlArea = document.getElementById('download-area');
+        document.getElementById('download-link').href = job.downloadUrl;
         dlArea.style.display = 'block';
 
-        resetButton();
+        document.getElementById('render-btn').disabled = false;
+        document.getElementById('render-btn').textContent = '▶ GÉNÉRER';
       } 
       else if (job.status === 'error') {
         clearInterval(pollTimer);
         showStatus('error', '❌ ' + (job.error || 'Erreur inconnue'), 0);
-        resetButton();
+        document.getElementById('render-btn').disabled = false;
+        document.getElementById('render-btn').textContent = '▶ GÉNÉRER';
       }
-    } catch (err) {
-      console.error("Polling error:", err);
-    }
-  }, 1800);
+    } catch(err) {}
+  }, 2000);
 }
 
-function resetButton() {
-  const btn = document.getElementById('render-btn');
-  btn.disabled = false;
-  btn.textContent = '▶ GÉNÉRER';
-}
-
-// Initialisation
-window.addEventListener('load', () => {
-  loadExample(); // Charge l'exemple automatiquement
-});
+// Init
+window.onload = function() {
+  loadExample();
+};
 </script>
 
 </body>
