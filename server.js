@@ -1576,190 +1576,158 @@ footer{
 <script>
 const EXAMPLE_JSON = ${JSON.stringify(EXAMPLE_SCENE_GRAPH, null, 2)};
 
-// Templates communauté (placeholders pour démo)
-const TEMPLATES = {
-  motivation: {
-    ...EXAMPLE_JSON,
-    title: "Template Motivation",
-    scenes: EXAMPLE_JSON.scenes.map(s => ({
-      ...s,
-      background: { type: 'gradient', color1: '#0d0700', color2: '#2a1000' },
-      elements: s.elements.map(el => el.type === 'text'
-        ? { ...el, style: { ...(el.style||{}), fontcolor: '#f5a623' } }
-        : el)
-    }))
-  },
-  finance: {
-    ...EXAMPLE_JSON,
-    title: "Template Finance",
-    scenes: [{
-      id: 'hook', duration: 4,
-      background: { type: 'color', color: '#020a02' },
-      elements: [
-        { type: 'text', content: '💰 5 ASTUCES', x: '(w-tw)/2', y: 'h*0.25',
-          style: { fontsize: 85, fontcolor: '#00ff88', bold: true, shadow: true } },
-        { type: 'text', content: 'pour investir en Afrique', x: '(w-tw)/2', y: 'h*0.25+100',
-          style: { fontsize: 40, fontcolor: '#ffffff' } },
-        { type: 'text', content: 'même avec 10 000 FCFA', x: '(w-tw)/2', y: 'h*0.55',
-          style: { fontsize: 36, fontcolor: '#aaaaaa' } }
-      ]
-    }],
-    transitions: []
-  },
-};
-for (const t of ['lifestyle','business','sport','tech']) {
-  TEMPLATES[t] = { ...EXAMPLE_JSON, title: \`Template \${t.charAt(0).toUpperCase()+t.slice(1)}\` };
-}
+let pollTimer = null;
+let currentJobId = null;
 
-// ── Tabs ──────────────────────────────────────────────────────
-let currentTab = 'json';
+// Tabs
 function switchTab(tab) {
-  currentTab = tab;
-  document.querySelectorAll('.tab').forEach((t,i) => {
-    t.classList.toggle('active', (i === 0 && tab === 'json') || (i === 1 && tab === 'text'));
-  });
-  document.getElementById('tab-json').classList.toggle('active', tab === 'json');
-  document.getElementById('tab-text').classList.toggle('active', tab === 'text');
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  
+  if (tab === 'json') {
+    document.querySelector('.tab:nth-child(1)').classList.add('active');
+    document.getElementById('tab-json').classList.add('active');
+  } else {
+    document.querySelector('.tab:nth-child(2)').classList.add('active');
+    document.getElementById('tab-text').classList.add('active');
+  }
 }
 
-// ── Load Example ─────────────────────────────────────────────
+// Charger exemple
 function loadExample() {
   document.getElementById('json-input').value = JSON.stringify(EXAMPLE_JSON, null, 2);
   switchTab('json');
 }
-function loadTemplate(name) {
-  const t = TEMPLATES[name] || EXAMPLE_JSON;
-  document.getElementById('json-input').value = JSON.stringify(t, null, 2);
-  switchTab('json');
-  document.getElementById('studio').scrollIntoView({ behavior: 'smooth' });
-}
+
 function formatJSON() {
   try {
     const val = document.getElementById('json-input').value;
     document.getElementById('json-input').value = JSON.stringify(JSON.parse(val), null, 2);
+    showStatus('rendering', 'JSON formaté', 0);
   } catch(e) {
-    showStatus('error', 'JSON invalide: ' + e.message, 0);
+    showStatus('error', 'JSON invalide : ' + e.message, 0);
   }
 }
 
-// ── Status UI ─────────────────────────────────────────────────
-function showStatus(type, msg, progress) {
+// Status
+function showStatus(type, msg, progress = 0) {
   const box = document.getElementById('status-box');
-  const cls = type === 'done' ? 'status-done' : type === 'error' ? 'status-error' : 'status-rendering';
-  box.innerHTML = \`<span class="\${cls} \${type==='rendering'?'pulsing':''}">\${msg}</span>
-    <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:\${progress}%"></div></div>\`;
+  let html = `<span class="${type}">${msg}</span>`;
+  
+  if (progress > 0) {
+    html += `<div class="progress-bar"><div class="progress-fill" style="width:${progress}%"></div></div>`;
+  }
+  box.innerHTML = html;
 }
 
-// ── Render ────────────────────────────────────────────────────
-let pollTimer = null;
-
+// Render principal
 async function startRender() {
   const btn = document.getElementById('render-btn');
   btn.disabled = true;
-  btn.textContent = '⏳ EN COURS…';
+  btn.textContent = '⏳ GÉNÉRATION EN COURS...';
+
   document.getElementById('download-area').style.display = 'none';
-  document.getElementById('log-box').classList.remove('visible');
-  document.getElementById('video-container').innerHTML = \`
-    <div class="video-placeholder">
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><polygon points="5,3 19,12 5,21"/></svg>
-      <span class="pulsing">Génération en cours…</span>
-    </div>\`;
 
   try {
     let payload;
 
     if (currentTab === 'json') {
       const raw = document.getElementById('json-input').value.trim();
-      if (!raw) throw new Error('Colle un JSON ou charge un exemple d\\'abord');
+      if (!raw) throw new Error("Collez un JSON ou chargez l'exemple");
       payload = JSON.parse(raw);
     } else {
-      // Mode texte: envoyer le prompt au endpoint AI (à implémenter)
+      // Mode texte (IA)
       const prompt = document.getElementById('text-prompt').value.trim();
-      if (!prompt) throw new Error('Décris ta vidéo en quelques mots');
-      showStatus('rendering', '🤖 Génération du Scene Graph via IA…', 10);
+      if (!prompt) throw new Error("Entrez une description");
+      showStatus('rendering', '🤖 IA en cours...', 10);
+      
       const aiRes = await fetch('/api/ai/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ prompt, format: document.getElementById('format-select').value })
       });
-      if (!aiRes.ok) throw new Error('IA non configurée. Utilise le mode JSON pour tester.');
+      if (!aiRes.ok) throw new Error('Mode IA non disponible pour le moment');
       payload = await aiRes.json();
     }
 
-    // Override format
     payload.format = document.getElementById('format-select').value || payload.format;
 
-    showStatus('rendering', '⚙️ Rendu démarré…', 5);
+    showStatus('rendering', '🚀 Envoi du job...', 15);
 
     const res = await fetch('/api/render', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload)
     });
+
     const data = await res.json();
 
     if (!res.ok) throw new Error(data.error || 'Erreur serveur');
 
-    showStatus('rendering', \`Job \${data.jobId.slice(0,8)} en file d'attente…\`, 5);
-    pollJob(data.jobId);
+    currentJobId = data.jobId;
+    showStatus('rendering', `Job ${currentJobId.slice(0,8)} démarré...`, 20);
+
+    startPolling(currentJobId);
 
   } catch (e) {
-    showStatus('error', '✗ ' + e.message, 0);
-    btn.disabled = false;
-    btn.textContent = '▶ GÉNÉRER';
+    showStatus('error', '❌ ' + e.message, 0);
+    resetButton();
   }
 }
 
-function pollJob(jobId) {
+function startPolling(jobId) {
   if (pollTimer) clearInterval(pollTimer);
+
   pollTimer = setInterval(async () => {
     try {
-      const res  = await fetch(\`/api/status/\${jobId}\`);
-      const data = await res.json();
+      const res = await fetch(`/api/status/${jobId}`);
+      const job = await res.json();
 
-      if (data.status === 'rendering') {
-        showStatus('rendering', \`⚙️ Rendu en cours… \${data.progress}%\`, data.progress);
-      } else if (data.status === 'done') {
+      if (job.status === 'rendering') {
+        showStatus('rendering', `⚙️ Rendu en cours — ${job.progress}%`, job.progress);
+      } 
+      else if (job.status === 'done') {
         clearInterval(pollTimer);
-        showStatus('done', '✓ Vidéo prête !', 100);
+        showStatus('done', '✅ Vidéo terminée !', 100);
 
-        // Afficher la vidéo
-        const vc = document.getElementById('video-container');
-        vc.innerHTML = \`<video controls autoplay loop src="\${data.downloadUrl}" style="width:100%;height:100%;object-fit:contain"></video>\`;
+        // Affichage vidéo
+        const container = document.getElementById('video-container');
+        container.innerHTML = `
+          <video controls autoplay loop style="width:100%; height:100%; object-fit:contain;">
+            <source src="${job.downloadUrl}" type="video/mp4">
+          </video>`;
 
-        // Lien téléchargement
-        const dl = document.getElementById('download-area');
-        const link = document.getElementById('download-link');
-        link.href = data.downloadUrl;
-        link.download = 'intentfilm_video.mp4';
-        dl.style.display = 'block';
+        // Bouton download
+        const dlArea = document.getElementById('download-area');
+        const dlLink = document.getElementById('download-link');
+        dlLink.href = job.downloadUrl;
+        dlArea.style.display = 'block';
 
-        document.getElementById('render-btn').disabled = false;
-        document.getElementById('render-btn').textContent = '▶ GÉNÉRER';
-
-      } else if (data.status === 'error') {
+        resetButton();
+      } 
+      else if (job.status === 'error') {
         clearInterval(pollTimer);
-        showStatus('error', '✗ Erreur: ' + (data.error||'inconnue'), 0);
-        const log = document.getElementById('log-box');
-        log.textContent = data.error || '';
-        log.classList.add('visible');
-        document.getElementById('render-btn').disabled = false;
-        document.getElementById('render-btn').textContent = '▶ GÉNÉRER';
+        showStatus('error', '❌ ' + (job.error || 'Erreur inconnue'), 0);
+        resetButton();
       }
-    } catch(e) {
-      // réseau — on continue le polling
+    } catch (err) {
+      console.error("Polling error:", err);
     }
-  }, 2000);
+  }, 1800);
 }
 
-// ── Charger l'exemple au démarrage pour info ─────────────────
+function resetButton() {
+  const btn = document.getElementById('render-btn');
+  btn.disabled = false;
+  btn.textContent = '▶ GÉNÉRER';
+}
+
+// Initialisation
 window.addEventListener('load', () => {
-  const ta = document.getElementById('json-input');
-  if (!ta.value) {
-    ta.placeholder = 'Colle ton JSON ici ou clique "Charger l\\'exemple" ↓\\n\\nFormat attendu:\\n{\\n  "title": "Ma Vidéo",\\n  "format": "tiktok_vertical",\\n  "fps": 30,\\n  "scenes": [...],\\n  "transitions": [...],\\n  "audio": { "type": "none" }\\n}';
-  }
+  loadExample(); // Charge l'exemple automatiquement
 });
 </script>
+
 </body>
 </html>`;
 
