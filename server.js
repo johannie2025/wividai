@@ -277,8 +277,9 @@ async function renderVideo(jobId, sceneGraph) {
       const geq = `geq=r='${r1}+(${r2}-${r1})*Y/H':g='${g1}+(${g2}-${g1})*Y/H':b='${b1}+(${b2}-${b1})*Y/H'`;
       filters.push(`[${inputIdx}:v]${geq},setsar=1[bg${si}]`);
     } else {
-      // Couleur solide
-      const color = (bg.color || '#000000').replace('#', '');
+      // Couleur solide — FFmpeg exige 0xRRGGBB ou nom de couleur
+      const rawHex = (bg.color || '#000000').replace('#', '');
+      const color  = `0x${rawHex}`;
       inputs.push(`-f`, `lavfi`, `-i`,
         `color=c=${color}:s=${W}x${H}:d=${duration}:r=${FPS}`);
       filters.push(`[${inputIdx}:v]setsar=1[bg${si}]`);
@@ -323,7 +324,7 @@ async function renderVideo(jobId, sceneGraph) {
         const by = el.y || '0';
         const bw = el.width  || 'iw';
         const bh = el.height || '100';
-        const bc = (el.color || '#ffffff').replace('#', '');
+        const bc = `0x${(el.color || '#ffffff').replace('#', '')}`;
         const alpha = el.opacity || 0.5;
         filters.push(`[${prevLabel}]drawbox=x=${bx}:y=${by}:w=${bw}:h=${bh}:color=${bc}@${alpha}:t=fill[${nextLabel}]`);
         prevLabel = nextLabel;
@@ -334,7 +335,7 @@ async function renderVideo(jobId, sceneGraph) {
         const ly1 = el.y1 || 'h/2';
         const lx2 = el.x2 || 'w';
         const ly2 = el.y2 || 'h/2';
-        const lc  = (el.color || '#f5a623').replace('#', '');
+        const lc  = `0x${(el.color || '#f5a623').replace('#', '')}`;
         filters.push(`[${prevLabel}]drawbox=x=${lx1}:y=${ly1}:w=${lx2}:h=3:color=${lc}:t=fill[${nextLabel}]`);
         prevLabel = nextLabel;
       }
@@ -389,27 +390,31 @@ async function renderVideo(jobId, sceneGraph) {
   // ── Audio ────────────────────────────────────────────────────
   // MVP: silence ou audio file (TTS à ajouter)
   const audio = sceneGraph.audio || { type: 'none' };
-  let audioArgs = [];
-  let hasAudio  = false;
+  let hasAudio = false;
 
   if (audio.type === 'file' && audio.path && fs.existsSync(audio.path)) {
-    audioArgs = [`-i`, audio.path];
-    hasAudio  = true;
+    inputs.push(`-i`, audio.path);   // ← audio rejoint le tableau inputs
+    hasAudio = true;
     inputIdx++;
+  }
+
+  // Silence synthétique — DOIT être dans inputs avant filter_complex
+  const silentIdx = inputIdx;
+  if (!hasAudio) {
+    inputs.push(`-f`, `lavfi`, `-i`, `anullsrc=channel_layout=stereo:sample_rate=44100`);
   }
 
   // ── Assembler la commande finale ─────────────────────────────
   const filterStr = filters.join('; ');
 
+  const audioMapIdx = hasAudio ? inputIdx - 1 : silentIdx;
+
   const cmd = [
-    ...inputs,
-    ...audioArgs,
+    ...inputs,                          // tous les inputs (vidéo + audio) avant filter_complex
     `-filter_complex`, filterStr,
     `-map`, `[${finalLabel}]`,
-    ...(hasAudio ? [`-map`, `${inputIdx - 1}:a`, `-shortest`] : [
-      `-f`, `lavfi`, `-i`, `anullsrc=channel_layout=stereo:sample_rate=44100`,
-      `-map`, `${inputIdx}:a`, `-shortest`,
-    ]),
+    `-map`, `${audioMapIdx}:a`,
+    `-shortest`,
     `-c:v`, `libx264`,
     `-preset`, `fast`,
     `-crf`, `23`,
