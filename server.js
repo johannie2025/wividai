@@ -1927,9 +1927,13 @@ window.addEventListener('load', () => {
 
 
 // ─────────────────────────────────────────────────────────────────
-//  POST /api/render/sync — Stream MP4 direct (pas de stockage fichier)
+//  POST /api/render/sync — Render vers /tmp puis envoi complet
+//  /tmp survit pendant la session Render (pas de redémarrage pendant le rendu)
 // ─────────────────────────────────────────────────────────────────
 app.post('/api/render/sync', async (req, res) => {
+  const jobId = uuidv4();
+  const tmpFile = path.join(os.tmpdir(), `intentfilm_${jobId}.mp4`);
+
   try {
     let sceneGraph = req.body;
     if (typeof sceneGraph === 'string') sceneGraph = JSON.parse(sceneGraph);
@@ -1938,29 +1942,67 @@ app.post('/api/render/sync', async (req, res) => {
     if (!sceneGraph.scenes || !Array.isArray(sceneGraph.scenes))
       return res.status(400).json({ error: '"scenes" requis' });
 
-    const jobId = uuidv4();
-    console.log(`[sync:${jobId.slice(0,8)}] Démarrage rendu stream`);
-    const cmd = await buildFfmpegCmd(jobId, sceneGraph);
+    console.log(`[sync:${jobId.slice(0,8)}] Démarrage → ${tmpFile}`);
+
+    // Construire la commande FFmpeg vers fichier tmp (pas pipe:1)
+    const cmdArgs = await buildFfmpegCmd(jobId, sceneGraph);
+
+    // Remplacer pipe:1 par le fichier tmp
+    const cmd = cmdArgs.slice(0, -1).concat([tmpFile]);
+    // Retirer aussi -f mp4 et frag_keyframe qui ne sont nécessaires que pour pipe
+    const cleanCmd = cmd.filter((a, i) => {
+      if (a === 'frag_keyframe+empty_moov') return false;
+      if (cmd[i-1] === '-movflags' && a === 'frag_keyframe+empty_moov') return false;
+      return true;
+    });
+    // Corriger movflags pour fichier normal
+    const finalCmd = cleanCmd.map(a =>
+      a === 'frag_keyframe+empty_moov' ? '+faststart' : a
+    );
+    // Retirer -f mp4 (inutile avec extension .mp4)
+    const cmdFinal = [];
+    for (let i = 0; i < finalCmd.length; i++) {
+      if (finalCmd[i] === '-f' && finalCmd[i+1] === 'mp4') { i++; continue; }
+      cmdFinal.push(finalCmd[i]);
+    }
+
+    console.log(`[sync:${jobId.slice(0,8)}] FFmpeg: ${FFMPEG_BIN} ${cmdFinal.slice(0,6).join(' ')} ...`);
+
+    // Exécuter FFmpeg et attendre la fin complète
+    await new Promise((resolve, reject) => {
+      const proc = spawn(FFMPEG_BIN, cmdFinal, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let errOut = '';
+      proc.stderr.on('data', d => { errOut += d.toString(); });
+      proc.on('close', code => {
+        if (code === 0) {
+          console.log(`[sync:${jobId.slice(0,8)}] FFmpeg OK`);
+          resolve();
+        } else {
+          console.error(`[sync:${jobId.slice(0,8)}] FFmpeg erreur (${code}):\n${errOut.slice(-1500)}`);
+          reject(new Error(`FFmpeg erreur code ${code}:\n${errOut.slice(-800)}`));
+        }
+      });
+      proc.on('error', e => reject(new Error(`FFmpeg introuvable: ${e.message}`)));
+    });
+
+    // Fichier complet → envoyer
+    const stat = fs.statSync(tmpFile);
+    console.log(`[sync:${jobId.slice(0,8)}] Envoi ${(stat.size/1024/1024).toFixed(1)}MB`);
 
     res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', 'inline; filename="video.mp4"');
+    res.setHeader('Content-Disposition', 'inline; filename="intentfilm.mp4"');
+    res.setHeader('Content-Length', stat.size);
+    res.setHeader('Accept-Ranges', 'bytes');
 
-    const proc = spawn(FFMPEG_BIN, cmd, { stdio: ['ignore', 'pipe', 'pipe'] });
-    proc.stdout.pipe(res);
-
-    let errOut = '';
-    proc.stderr.on('data', d => { errOut += d.toString(); });
-    proc.on('close', code => {
-      if (code !== 0) console.error(`[sync:${jobId.slice(0,8)}] FFmpeg erreur:`, errOut.slice(-800));
-      else console.log(`[sync:${jobId.slice(0,8)}] Terminé OK`);
+    const stream = fs.createReadStream(tmpFile);
+    stream.pipe(res);
+    stream.on('close', () => {
+      fs.unlink(tmpFile, () => {}); // nettoyage silencieux
     });
-    proc.on('error', e => {
-      if (!res.headersSent) res.status(500).json({ error: e.message });
-    });
-    req.on('close', () => proc.kill());
 
   } catch (e) {
-    if (!res.headersSent) res.status(400).json({ error: e.message });
+    fs.unlink(tmpFile, () => {});
+    if (!res.headersSent) res.status(500).json({ error: e.message });
   }
 });
 
