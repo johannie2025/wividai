@@ -362,102 +362,116 @@ async function buildFfmpegCmd(jobId, sceneGraph) {
         const y = resolvePos(el.y, 'y', W, H, refW, refH);
 
         // ── ANIMATIONS RÉELLES ─────────────────────────────
+        // RÈGLE FFmpeg: fontcolor N'ACCEPTE PAS d'expression alpha.
+        // Le canal alpha se passe via le paramètre séparé: alpha='EXPR'
+        // Les positions x/y ACCEPTENT des expressions dynamiques (if, gte, t, w, h).
         const anim = el.animation || {};
         let enableExpr = '1';
-        let alphaExpr  = '1';
+        let alphaExpr  = '1';       // paramètre alpha= séparé de fontcolor
         let xExpr      = x;
         let yExpr      = y;
 
         switch (anim.type) {
           case 'fade_in': {
-            const start = anim.start || 0;
-            const dur   = anim.duration || 0.6;
-            // alpha de 0 à 1 pendant `dur` secondes à partir de `start`
-            alphaExpr  = `if(lt(t,${start}),0,if(lt(t,${start}+${dur}),(t-${start})/${dur},1))`;
-            enableExpr = `gte(t,${start})`;
+            const s = anim.start || 0;
+            const d = anim.duration || 0.6;
+            alphaExpr  = `if(lt(t,${s}),0,if(lt(t,${s}+${d}),(t-${s})/${d},1))`;
+            enableExpr = `gte(t,${s})`;
             break;
           }
           case 'fade_out': {
-            const start = anim.start || (scene.duration - 0.6);
-            const dur   = anim.duration || 0.6;
-            alphaExpr  = `if(lt(t,${start}),1,if(lt(t,${start}+${dur}),1-(t-${start})/${dur},0))`;
-            enableExpr = `lte(t,${start}+${dur})`;
+            const s = anim.start != null ? anim.start : Math.max(0, duration - (anim.duration || 0.6));
+            const d = anim.duration || 0.6;
+            alphaExpr  = `if(lt(t,${s}),1,if(lt(t,${s}+${d}),1-(t-${s})/${d},0))`;
+            enableExpr = `lte(t,${s}+${d})`;
             break;
           }
           case 'slide_left': {
-            const start = anim.start || 0;
-            const dur   = anim.duration || 0.5;
-            // Slide depuis droite vers position cible
-            const progress = `if(lt(t,${start}),0,if(lt(t,${start}+${dur}),(t-${start})/${dur},1))`;
-            xExpr = `${x}+w*(1-${progress})`;
-            alphaExpr = `if(lt(t,${start}),0,1)`;
-            enableExpr = `gte(t,${start})`;
+            // Glisse depuis droite (off-screen) vers position cible
+            const s = anim.start || 0;
+            const d = anim.duration || 0.5;
+            xExpr = `${x}+w*if(lt(t,${s}),1,if(lt(t,${s}+${d}),1-(t-${s})/${d},0))`;
+            alphaExpr  = `if(lt(t,${s}),0,1)`;
+            enableExpr = `gte(t,${s})`;
             break;
           }
           case 'slide_right': {
-            const start = anim.start || 0;
-            const dur   = anim.duration || 0.5;
-            const progress = `if(lt(t,${start}),0,if(lt(t,${start}+${dur}),(t-${start})/${dur},1))`;
-            xExpr = `${x}-w*(1-${progress})`;
-            alphaExpr = `if(lt(t,${start}),0,1)`;
-            enableExpr = `gte(t,${start})`;
+            // Glisse depuis gauche (off-screen) vers position cible
+            const s = anim.start || 0;
+            const d = anim.duration || 0.5;
+            xExpr = `${x}-w*if(lt(t,${s}),1,if(lt(t,${s}+${d}),1-(t-${s})/${d},0))`;
+            alphaExpr  = `if(lt(t,${s}),0,1)`;
+            enableExpr = `gte(t,${s})`;
             break;
           }
           case 'slide_up': {
-            const start = anim.start || 0;
-            const dur   = anim.duration || 0.5;
-            const progress = `if(lt(t,${start}),0,if(lt(t,${start}+${dur}),(t-${start})/${dur},1))`;
-            yExpr = `${y}+h*0.15*(1-${progress})`;
-            alphaExpr = `if(lt(t,${start}),0,if(lt(t,${start}+${dur}),(t-${start})/${dur},1))`;
-            enableExpr = `gte(t,${start})`;
+            // Glisse depuis le bas vers position cible + fade
+            const s = anim.start || 0;
+            const d = anim.duration || 0.5;
+            yExpr = `${y}+h*0.12*if(lt(t,${s}),1,if(lt(t,${s}+${d}),1-(t-${s})/${d},0))`;
+            alphaExpr  = `if(lt(t,${s}),0,if(lt(t,${s}+${d}),(t-${s})/${d},1))`;
+            enableExpr = `gte(t,${s})`;
             break;
           }
           case 'slide_down': {
-            const start = anim.start || 0;
-            const dur   = anim.duration || 0.5;
-            const progress = `if(lt(t,${start}),0,if(lt(t,${start}+${dur}),(t-${start})/${dur},1))`;
-            yExpr = `${y}-h*0.15*(1-${progress})`;
-            alphaExpr = `if(lt(t,${start}),0,if(lt(t,${start}+${dur}),(t-${start})/${dur},1))`;
-            enableExpr = `gte(t,${start})`;
+            // Glisse depuis le haut vers position cible + fade
+            const s = anim.start || 0;
+            const d = anim.duration || 0.5;
+            yExpr = `${y}-h*0.12*if(lt(t,${s}),1,if(lt(t,${s}+${d}),1-(t-${s})/${d},0))`;
+            alphaExpr  = `if(lt(t,${s}),0,if(lt(t,${s}+${d}),(t-${s})/${d},1))`;
+            enableExpr = `gte(t,${s})`;
             break;
           }
           case 'appear': {
-            const start = anim.start || 0;
-            enableExpr = `gte(t,${start})`;
-            alphaExpr  = `if(lt(t,${start}),0,1)`;
+            const s = anim.start || 0;
+            enableExpr = `gte(t,${s})`;
+            // alpha binaire: invisible avant, visible après
+            alphaExpr  = `if(lt(t,${s}),0,1)`;
             break;
           }
           case 'typewriter': {
-            // Simulé par enable progressif — FFmpeg ne supporte pas le vrai typewriter
-            // On utilise plusieurs éléments à la place, ou fade_in avec courte durée
-            const start = anim.start || 0;
-            const dur   = anim.duration || 0.8;
-            alphaExpr  = `if(lt(t,${start}),0,if(lt(t,${start}+${dur}),(t-${start})/${dur},1))`;
-            enableExpr = `gte(t,${start})`;
+            // Fade rapide = effet typewriter simplifié
+            const s = anim.start || 0;
+            const d = anim.duration || 0.3;
+            alphaExpr  = `if(lt(t,${s}),0,if(lt(t,${s}+${d}),(t-${s})/${d},1))`;
+            enableExpr = `gte(t,${s})`;
             break;
           }
           case 'pulse': {
-            // Oscillation alpha 0.6–1.0
+            // Pulsation alpha continue (sin entre 0.5 et 1.0)
+            // PI explicite pour compatibilité FFmpeg toutes versions
             const speed = anim.speed || 2;
-            alphaExpr  = `0.7+0.3*sin(t*${speed}*PI)`;
+            alphaExpr  = `0.5+0.5*sin(t*${speed}*3.14159)`;
             break;
           }
           case 'bounce': {
-            const start = anim.start || 0;
-            const dur   = anim.duration || 0.7;
-            const progress = `if(lt(t,${start}),0,if(lt(t,${start}+${dur}),(t-${start})/${dur},1))`;
-            // Bounce: overshoot puis settle
-            yExpr = `${y}-h*0.05*abs(sin(${progress}*PI*2.5))*exp(-${progress}*3)*(1-${progress})`;
-            alphaExpr = `if(lt(t,${start}),0,if(lt(t,${start}+0.1),(t-${start})/0.1,1))`;
-            enableExpr = `gte(t,${start})`;
+            // Rebond: position Y oscille amorties + fade entrée
+            const s = anim.start || 0;
+            const d = anim.duration || 0.7;
+            // Offset Y décroissant oscillant
+            yExpr = `${y}+h*0.05*if(lt(t,${s}),0,if(lt(t,${s}+${d}),abs(sin((t-${s})/${d}*3.14159*3))*exp(-(t-${s})/${d}*3),0))`;
+            alphaExpr  = `if(lt(t,${s}),0,if(lt(t,${s}+0.15),(t-${s})/0.15,1))`;
+            enableExpr = `gte(t,${s})`;
+            break;
+          }
+          case 'zoom_in': {
+            // Simulé par augmentation de fontSize (drawtext ne supporte pas scale)
+            // → fade_in comme fallback propre
+            const s = anim.start || 0;
+            const d = anim.duration || 0.6;
+            alphaExpr  = `if(lt(t,${s}),0,if(lt(t,${s}+${d}),(t-${s})/${d},1))`;
+            enableExpr = `gte(t,${s})`;
             break;
           }
           default:
+            // Pas d'animation → texte statique visible
             break;
         }
 
         const textEscaped = escapeDrawtext(el.content || el.text || '');
-        const dt = `drawtext=${fontParam}text='${textEscaped}':fontsize=${fontSize}:fontcolor=${color}@${alphaExpr}:x=${xExpr}:y=${yExpr}:${shadow}enable='${enableExpr}'`;
+        // CRITIQUE: fontcolor=RRGGBB (sans alpha), alpha='EXPR' séparé
+        const alphaParam = alphaExpr !== '1' ? `:alpha='${alphaExpr}'` : '';
+        const dt = `drawtext=${fontParam}text='${textEscaped}':fontsize=${fontSize}:fontcolor=${color}:x=${xExpr}:y=${yExpr}:${shadow}enable='${enableExpr}'${alphaParam}`;
         filters.push(`[${prevLabel}]${dt}[${nextLabel}]`);
         prevLabel = nextLabel;
 
